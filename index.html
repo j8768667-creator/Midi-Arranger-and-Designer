@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Chord Arranger Studio v9.3 — MIDI Chord Import</title>
+<title>Chord Arranger Studio v10 — Musical Engine</title>
 <style>
 :root{--bg:#f5f7fb;--panel:#fff;--ink:#172033;--muted:#667085;--accent:#5147e5;--accent2:#eeedff;--border:#d9dfeb;--ok:#137a4b;--err:#b42318;--dark:#101828}
 [data-theme="dark"]{--bg:#111827;--panel:#1f2937;--ink:#f3f4f6;--muted:#9ca3af;--accent:#818cf8;--accent2:#312e81;--border:#374151;--dark:#f3f4f6}
@@ -43,8 +43,8 @@ textarea{min-height:96px;resize:vertical}.row{display:grid;grid-template-columns
 <header>
 <div class="header-left">
 <span class="badge">AI-Powered Arrangement Engine</span>
-<h1>Chord Arranger Studio <span class="version">v9.3 — MIDI Chord Import</span></h1>
-<div class="sub">Intelligent voice leading · Genre-specific bass · Section‑aware dynamics &amp; phrase‑level humanisation</div>
+<h1>Chord Arranger Studio <span class="version">v10 — Musical Engine</span></h1>
+<div class="sub">Shared groove planning · Restrained bass · Call-and-response phrasing · Musical space</div>
 </div>
 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
 <button class="secondary" id="themeToggle" title="Toggle dark mode">🌓</button>
@@ -116,6 +116,13 @@ textarea{min-height:96px;resize:vertical}.row{display:grid;grid-template-columns
 <div><label for="bassInstrument">Bass instrument</label><select id="bassInstrument"><option value="auto">Auto (genre default)</option><option value="32">Acoustic Bass</option><option value="33">Electric Bass (finger)</option><option value="34">Electric Bass (pick)</option><option value="35">Fretless Bass</option><option value="36">Slap Bass 1</option><option value="37">Slap Bass 2</option><option value="38">Synth Bass 1</option><option value="39">Synth Bass 2</option></select></div>
 <div><label for="leadInstrument">Lead instrument</label><select id="leadInstrument"><option value="auto">Auto (genre default)</option><option value="40">Violin</option><option value="56">Trumpet</option><option value="57">Trombone</option><option value="65">Alto Sax</option><option value="68">Oboe</option><option value="71">Clarinet</option><option value="73">Flute</option><option value="30">Distortion Guitar</option><option value="80">Lead (square)</option><option value="81">Lead (sawtooth)</option></select></div>
 </div>
+
+<div class="miniTitle">Arrangement behaviour</div>
+<div class="row">
+<div><label for="arrangementMode">Musical density</label><select id="arrangementMode"><option value="sparse">Sparse — maximum space</option><option value="balanced" selected>Balanced — musical default</option><option value="full">Full — more active</option></select></div>
+<div><label for="leadPresence">Lead presence</label><select id="leadPresence"><option value="low" selected>Low — occasional phrases</option><option value="medium">Medium</option><option value="high">High</option></select></div>
+</div>
+<div class="help">Balanced deliberately leaves rests between parts. Full is closer to the older, busier behaviour.</div>
 
 <div class="miniTitle">Tracks</div>
 <div class="checks"><label><input id="drums" type="checkbox" checked>Drums</label><label><input id="bass" type="checkbox" checked>Bass</label><label><input id="harmony" type="checkbox" checked>Harmony</label><label><input id="lead" type="checkbox" checked>Lead</label><label><input id="guide" type="checkbox">Chord guide</label></div>
@@ -229,6 +236,8 @@ function saveState() {
     arpRate: $("arpRate").value,
     bassInstrument: $("bassInstrument").value,
     leadInstrument: $("leadInstrument").value,
+    arrangementMode: $("arrangementMode").value,
+    leadPresence: $("leadPresence").value,
     tracks: {
       drums: $("drums").checked,
       bass: $("bass").checked,
@@ -278,6 +287,8 @@ function restoreState(state) {
   $("arpRate").value = state.arpRate;
   $("bassInstrument").value = state.bassInstrument;
   $("leadInstrument").value = state.leadInstrument;
+  if (state.arrangementMode) $("arrangementMode").value = state.arrangementMode;
+  if (state.leadPresence) $("leadPresence").value = state.leadPresence;
   if (state.tracks) {
     $("drums").checked = state.tracks.drums;
     $("bass").checked = state.tracks.bass;
@@ -735,8 +746,10 @@ function masterTimeline() {
   const harmonyArticulation = $("harmonyArticulation").value;
   const arpTicks = { 4: PPQ, 8: PPQ / 2, 16: STEP }[$("arpRate").value] || PPQ / 2;
   const ending = $("ending").value;
+  const arrangementMode = $("arrangementMode") ? $("arrangementMode").value : "balanced";
+  const leadPresence = $("leadPresence") ? $("leadPresence").value : "low";
   const sectionPlan = buildSectionPlan(structure, genre, density, complexity, seed);
-  return { chords, structure, sections, bars, genre, key, tempo, seed, complexity, density, swing, human, voicingStyleSetting, rng, bassProgram, leadProgram, harmonyArticulation, arpTicks, ending, totalBars: sections.length, totalTicks: sections.length * BAR, sectionPlan };
+  return { chords, structure, sections, bars, genre, key, tempo, seed, complexity, density, swing, human, voicingStyleSetting, rng, bassProgram, leadProgram, harmonyArticulation, arpTicks, ending, arrangementMode, leadPresence, totalBars: sections.length, totalTicks: sections.length * BAR, sectionPlan };
 }
 
 function selectedKey(chords) {
@@ -1392,17 +1405,173 @@ function finishSong(song, events) {
 }
 
 // ---------- build arrangement ----------
+
+// ---------- v10 musical coordination layer ----------
+// A shared phrase plan prevents every instrument from filling the same space.
+function buildMusicalPlan(song) {
+  const plan = [];
+  const modeFactor = song.arrangementMode === "sparse" ? 0.58 : song.arrangementMode === "full" ? 1.18 : 0.82;
+  for (let b=0; b<song.totalBars; b++) {
+    const sec = song.sections[b];
+    const sp = song.sectionPlan[sec.sectionIndex];
+    const r = sectionRng(song, `musical-plan:${sec.name}:${Math.floor(sec.index/4)}`);
+    const phrasePos = sec.index % 4;
+    const sectionClass = classify(sec.name);
+    const energy = sp ? sp.energy : sectionEnergy(sec);
+    const transition = phrasePos === 3 || sec.index === sec.length-1;
+    const leadBarChance = (sectionClass.chorus ? 0.48 : sectionClass.verse ? 0.25 : sectionClass.intro ? 0.12 : 0.22) * modeFactor;
+    const harmonyBusy = song.harmonyArticulation !== "sustain" && r() < (0.22 * modeFactor + (sectionClass.chorus ? 0.08 : 0));
+    plan.push({
+      phrasePos, transition, energy,
+      bassPulse: song.genre === "house" || (song.arrangementMode === "full" && energy > .75),
+      bassFill: transition && r() < 0.42 * modeFactor,
+      harmonyBusy,
+      leadActive: r() < leadBarChance,
+      leadAnswer: phrasePos === 2 || transition,
+      leaveBeatOne: phrasePos === 1 && r() < .55
+    });
+  }
+  return plan;
+}
+
+function musicalBass(song, events, shared) {
+  for (let b=0; b<song.totalBars; b++) {
+    const c=song.bars[b], sec=song.sections[b], mp=shared[b];
+    const r=sectionRng(song,`musical-bass:${sec.name}:${b}`), base=b*BAR;
+    const root=midiAt(c.bass, song.genre==="cinematic"||song.genre==="drone"?32:38);
+    const next=song.bars[Math.min(b+1,song.totalBars-1)];
+    const mode=song.arrangementMode;
+    if (song.genre === "house") {
+      const slots = mode === "sparse" ? [2,10] : [2,6,10,14];
+      slots.forEach((st,i)=>add(events,"bass",base+st*STEP,Math.round(STEP*1.45),root+(i%2&&mode==="full"?12:0),velocity(76+mp.energy*14,r,song.human),1,`MB${b}`));
+      continue;
+    }
+    if (song.genre === "jazz") {
+      const pcs=[c.bass,(c.root+(c.minor?3:4))%12,(c.root+7)%12,generateApproach(next.root,song.key,"jazz",r)];
+      const count=mode==="sparse"?2:4;
+      for(let i=0;i<count;i++) add(events,"bass",base+i*(BAR/count),BAR/count-36,midiAt(pcs[i%pcs.length],38),velocity(72+mp.energy*14,r,song.human),1,`MB${b}`);
+      continue;
+    }
+    // Default behaviour: one confident long root, then only a restrained pickup or fifth.
+    const mainDur = mp.bassFill ? BAR-PPQ : BAR-30;
+    add(events,"bass",base,mainDur,root,velocity(72+mp.energy*17,r,song.human,mp.phrasePos===0?0.3:0),1,`MB${b}`);
+    if (mode !== "sparse" && mp.energy>.68 && !mp.leaveBeatOne && r()<.32) {
+      add(events,"bass",base+2*PPQ,PPQ-36,midiAt((c.root+7)%12,38),velocity(68+mp.energy*13,r,song.human),1,`MB${b}`);
+    }
+    if (mp.bassFill) {
+      const approach=generateApproach(next.root,song.key,song.genre,r);
+      add(events,"bass",base+3*PPQ,PPQ-42,midiAt(approach,38),velocity(70+mp.energy*14,r,song.human),1,`MB${b}:fill`);
+    }
+  }
+}
+
+function musicalHarmony(song, events, shared) {
+  const attacks=[]; let prev=null;
+  for(let b=0;b<song.totalBars;b++) {
+    const c=song.bars[b], sec=song.sections[b], mp=shared[b], base=b*BAR;
+    const r=sectionRng(song,`musical-harmony:${sec.name}:${b}`);
+    const sp=song.sectionPlan[sec.sectionIndex];
+    const style=effectiveVoicingStyle(song,`MH:${sec.name}`,sp);
+    let notes=song.genre==="rock"?rockHarmony(c,r,mp.energy):chooseBestVoicing(c,prev,{target:sp?sp.harmonyRegister:58,count:song.complexity>=4?5:4,style,genre:song.genre,bass:c.bass!==c.root?c.bass:null},r);
+    prev=notes; attacks[b]=[];
+    if(song.harmonyArticulation==="sustain") {
+      const start=b===0||song.bars[b-1].name!==c.name||song.sections[b-1].sectionIndex!==sec.sectionIndex;
+      if(!start) continue;
+      let span=1; while(b+span<song.totalBars&&song.bars[b+span].name===c.name&&song.sections[b+span].sectionIndex===sec.sectionIndex) span++;
+      const vel=velocity(47+mp.energy*20,r,song.human);
+      attacks[b].push(base);
+      articulateChord(events,base,span*BAR-36,notes,vel,"sustain",song.arpTicks,`MH${b}`,song.human,r);
+      continue;
+    }
+    // Balanced comping: usually one attack. A second attack only supports a lift or transition.
+    let slots=[mp.leaveBeatOne?4:0];
+    if(mp.harmonyBusy) slots.push(song.genre==="house"?8:8);
+    if(song.arrangementMode==="full"&&mp.energy>.78) slots.push(12);
+    slots=[...new Set(slots)].sort((a,b)=>a-b);
+    slots.forEach((st,i)=>{
+      const tick=base+st*STEP, next=i+1<slots.length?base+slots[i+1]*STEP:base+BAR;
+      const dur=Math.max(PPQ/2,(next-tick)*.82);
+      attacks[b].push(tick);
+      articulateChord(events,tick,dur,notes,velocity(48+mp.energy*22,r,song.human,i===0?.25:0),song.harmonyArticulation,song.arpTicks,`MH${b}:${i}`,song.human,r);
+    });
+  }
+  return attacks;
+}
+
+function nearestPitchForPc(pc,target,previous) {
+  let p=midiAt(pc,target);
+  if(previous===null) return p;
+  const opts=[p-12,p,p+12].filter(x=>x>=48&&x<=92);
+  return opts.sort((a,b)=>Math.abs(a-previous)-Math.abs(b-previous))[0];
+}
+
+function musicalLead(song,events,shared) {
+  let previous=null;
+  const presence=song.leadPresence==="high"?1.5:song.leadPresence==="medium"?1:0.62;
+  for(let b=0;b<song.totalBars;b++) {
+    const sec=song.sections[b], mp=shared[b];
+    const r=sectionRng(song,`musical-lead:${sec.name}:${Math.floor(sec.index/2)}`);
+    if(!mp.leadActive || r()>presence) continue;
+    // Do not start a lead phrase on every downbeat; answer after the accompaniment has spoken.
+    const base=b*BAR;
+    const starts=mp.leadAnswer?[8,11,14]:[4,7,10];
+    const noteCount=song.arrangementMode==="full"?3+(r()<.35?1:0):2+(r()<.28?1:0);
+    const scale=scalePCs(getSectionScale(sec,song.key));
+    const chord=chordPCs(song.bars[b]);
+    const motif=[];
+    let degree=Math.floor(r()*chord.length);
+    for(let i=0;i<noteCount;i++) {
+      const pool=i===0||i===noteCount-1?chord:scale;
+      const pc=pool[(degree+i+(r()<.25?1:0))%pool.length]; motif.push(pc);
+    }
+    for(let i=0;i<motif.length;i++) {
+      const st=starts[Math.min(i,starts.length-1)];
+      const tick=base+st*STEP;
+      const next=i+1<motif.length?base+starts[Math.min(i+1,starts.length-1)]*STEP:base+BAR;
+      const pitch=nearestPitchForPc(motif[i],78,previous);
+      add(events,"lead",tick,Math.max(STEP*1.4,(next-tick)*.72),pitch,velocity(58+mp.energy*18,r,song.human,i===0?.2:0),3,`ML${b}:${i}`);
+      previous=pitch;
+    }
+  }
+}
+
+function thinDrums(song,events) {
+  if(song.arrangementMode==="full") return;
+  const keep=[];
+  for(const e of events) {
+    if(e.track!=="drums") {keep.push(e);continue;}
+    const b=Math.floor(e.tick/BAR), step=Math.round((e.tick-b*BAR)/STEP), sec=song.sections[Math.min(b,song.sections.length-1)];
+    const r=sectionRng(song,`drum-thin:${b}:${e.pitch}:${step}`);
+    if(e.pitch===42||e.pitch===46||e.pitch===51) {
+      const chance=song.arrangementMode==="sparse"?.34:.62;
+      if(step%4===0||r()<chance) keep.push(e);
+    } else keep.push(e);
+  }
+  events.length=0; events.push(...keep);
+}
+
+function removeMusicalClashes(events) {
+  const harmonyTicks=new Set(events.filter(e=>e.track==="harmony").map(e=>Math.round(e.tick/STEP)));
+  for(let i=events.length-1;i>=0;i--) {
+    const e=events[i];
+    if(e.track==="lead"&&harmonyTicks.has(Math.round(e.tick/STEP))&&e.tick%BAR<STEP) events.splice(i,1);
+  }
+}
+
 function buildArrangement() {
   const song = masterTimeline();
   const events = [];
+  const musicalPlan = buildMusicalPlan(song);
   generateDrums(song, events);
-  generateBass(song, events);
-  const attacks = generateHarmony(song, events);
-  generateLead(song, events, attacks);
+  thinDrums(song, events);
+  musicalBass(song, events, musicalPlan);
+  const attacks = musicalHarmony(song, events, musicalPlan);
+  musicalLead(song, events, musicalPlan);
   generateGuide(song, events);
+  removeMusicalClashes(events);
   finishSong(song, events);
   events.sort((a,b)=>a.tick-b.tick || a.track.localeCompare(b.track) || a.pitch-b.pitch);
-  return { ...song, events, attacks };
+  return { ...song, events, attacks, musicalPlan };
 }
 
 // ---------- render ----------
@@ -1781,7 +1950,7 @@ function generate() {
     arrangement=buildArrangement();
     render(arrangement);
     $("status").className="status ok";
-    $("status").querySelector("span").textContent="Generated with intelligent voice leading and genre-specific bass.";
+    $("status").querySelector("span").textContent="Generated with shared phrasing, restrained bass and coordinated lead space.";
   } catch(e) {
     $("status").className="status err";
     $("status").querySelector("span").textContent=`Error: ${e.message}`;
@@ -1924,7 +2093,7 @@ $("exportChart").onclick=exportChart;
 $("preview").onclick=()=>$("preview").dataset.playing==="1"?stopPreview():preview();
 
 // auto-save
-["chords","structure","key","genre","tempo","seed","complexity","density","swing","humanise","harmonySound","voicingStyle","ending","harmonyArticulation","arpRate","bassInstrument","leadInstrument"].forEach(id=>{
+["chords","structure","key","genre","tempo","seed","complexity","density","swing","humanise","harmonySound","voicingStyle","ending","harmonyArticulation","arpRate","bassInstrument","leadInstrument","arrangementMode","leadPresence"].forEach(id=>{
   $(id).addEventListener("input",()=>{clearTimeout(window._saveTimer);window._saveTimer=setTimeout(saveState,500)});
 });
 document.querySelectorAll('.checks input[type="checkbox"]').forEach(cb=>{
