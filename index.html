@@ -289,12 +289,16 @@ function parseStructureWithKey(text) {
   const parts = text.split(",").map(x => x.trim()).filter(Boolean);
   if (!parts.length) throw Error("Enter a song structure.");
   return parts.map(x => {
-    const m = /^(.+?):\s*(\d+)(?:\s+in\s+([A-Ga-g][#b]?))?$/.exec(x);
-    if (!m) throw Error(`Bad section “${x}”. Use Name:bars [in KEY].`);
+    const m = /^(.+?):\s*(\d+)(?:\s+in\s+([A-Ga-g][#b]?(?:m|min|major|minor)?))?$/i.exec(x);
+    if (!m) throw Error(`Bad section “${x}”. Use Name:bars [in KEY], for example Bridge:4 in Am.`);
     const name = m[1].trim();
     const bars = clamp(+m[2], 1, 128);
-    const key = m[3] ? pcOf(m[3]) : null;
-    return { name, bars, key };
+    const rawKey = m[3] || "";
+    const mode = /(?:m|min|minor)$/i.test(rawKey) ? "min" : "maj";
+    const tonicText = rawKey.replace(/(?:major|minor|min|m)$/i, "");
+    const key = rawKey ? pcOf(tonicText) : null;
+    const keyLabel = rawKey ? `${NOTE_NAMES[key]}${mode === "min" ? "m" : ""}` : "";
+    return { name, bars, key, keyMode: rawKey ? mode : null, keyLabel };
   });
 }
 
@@ -321,6 +325,13 @@ function expandChordBars(chords, count) {
 
 function getSectionKey(section, fallbackKey) {
   return section.key !== null && section.key !== undefined ? section.key : fallbackKey;
+}
+
+function getSectionScale(section, fallbackKey) {
+  if (section.key !== null && section.key !== undefined) {
+    return { tonic: section.key, mode: section.keyMode || "maj" };
+  }
+  return fallbackKey;
 }
 
 function classify(name) {
@@ -576,7 +587,7 @@ function generateLead(song, events, harmonyAttacks) {
     if (ons.length > 5) ons = ons.filter((_, i) => i % 2 === 0);
     if (song.density <= 2) ons = ons.filter((_, i) => i % 2 === 0);
     if (!ons.length) ons = [b * BAR];
-    const keyScale = scalePCs(song.key);
+    const keyScale = scalePCs(getSectionScale(sec, song.key));
     const chord = chordPCs(song.bars[b]);
     const safe = chord.filter(p => keyScale.includes(p));
     const anchors = safe.length ? safe : chord;
@@ -630,7 +641,7 @@ function render(arr) {
   const counts = {};
   for (const e of arr.events) counts[e.track] = (counts[e.track] || 0) + 1;
   const keyName = `${NOTE_NAMES[arr.key.tonic]} ${arr.key.mode === "min" ? "minor" : "major"}`;
-  const lines = [`${arr.genre.toUpperCase()} · ${arr.tempo} BPM · ${keyName} · ${arr.totalBars} bars · seed ${arr.seed}`, "", ...arr.structure.map(s => `${s.name.padEnd(14)} ${String(s.bars).padStart(3)} bars${s.key !== null && s.key !== undefined ? ` in ${NOTE_NAMES[s.key]}` : ""}`), "", "BAR  SECTION        CHORD"];
+  const lines = [`${arr.genre.toUpperCase()} · ${arr.tempo} BPM · ${keyName} · ${arr.totalBars} bars · seed ${arr.seed}`, "", ...arr.structure.map(s => `${s.name.padEnd(14)} ${String(s.bars).padStart(3)} bars${s.key !== null && s.key !== undefined ? ` in ${s.keyLabel || NOTE_NAMES[s.key]}` : ""}`), "", "BAR  SECTION        CHORD"];
   for (let b = 0; b < Math.min(arr.totalBars, 48); b++) {
     const secKey = arr.sections[b].key !== null && arr.sections[b].key !== undefined ? ` in ${NOTE_NAMES[arr.sections[b].key]}` : "";
     lines.push(`${String(b + 1).padStart(3, "0")}  ${arr.sections[b].name.padEnd(14)} ${arr.bars[b].name}`);
@@ -645,7 +656,7 @@ function render(arr) {
     const el = document.createElement("span");
     el.style.flex = String(s.bars);
     el.style.background = colors[i % colors.length];
-    const keyLabel = s.key !== null && s.key !== undefined ? ` (${NOTE_NAMES[s.key]})` : "";
+    const keyLabel = s.key !== null && s.key !== undefined ? ` (${s.keyLabel || NOTE_NAMES[s.key]})` : "";
     el.textContent = s.name + keyLabel;
     el.title = `${s.name}: ${s.bars} bars${keyLabel}`;
     $("timeline").appendChild(el);
@@ -831,7 +842,7 @@ function renderStructureEditor(arr) {
     <div class="editRow" data-section="${i}">
       <input type="text" class="secName" value="${s.name.replace(/"/g, "&quot;")}">
       <input type="number" class="secBars" min="1" max="128" value="${s.bars}">
-      <input type="text" class="secKey" placeholder="Key" value="${s.key !== null && s.key !== undefined ? NOTE_NAMES[s.key] : ''}" style="width:50px;padding:4px;font-size:13px;">
+      <input type="text" class="secKey" placeholder="Key" value="${s.key !== null && s.key !== undefined ? (s.keyLabel || NOTE_NAMES[s.key]) : ''}" style="width:50px;padding:4px;font-size:13px;">
       <button class="remove" data-remove="${i}" type="button" title="Remove section">✕</button>
     </div>
   `).join("");
@@ -1000,17 +1011,18 @@ function chunk(name, program, channel, notes, endTick, tempo = null, markers = [
   return [77, 84, 114, 107, ...u32(body.length), ...body];
 }
 
-function midi(arr) {
+function midi(arr, onlyTrack = null) {
   const tracks = [], markers = [];
   let tick = 0;
-  for (const s of arr.structure) { markers.push({ tick, name: `${s.name}${s.key !== null && s.key !== undefined ? ` (${NOTE_NAMES[s.key]})` : ""}` }); tick += s.bars * BAR; }
+  for (const s of arr.structure) { markers.push({ tick, name: `${s.name}${s.key !== null && s.key !== undefined ? ` (${s.keyLabel || NOTE_NAMES[s.key]})` : ""}` }); tick += s.bars * BAR; }
   tracks.push(chunk("Conductor", null, 0, [], arr.totalTicks, arr.tempo, markers));
   const by = t => arr.events.filter(e => e.track === t);
-  if ($("drums").checked) tracks.push(chunk("Drums", null, 9, by("drums"), arr.totalTicks));
-  if ($("bass").checked) tracks.push(chunk("Bass", arr.bassProgram, 1, by("bass"), arr.totalTicks));
-  if ($("harmony").checked) tracks.push(chunk("Harmony", GENRE_STYLES[arr.genre].harmony[$("harmonySound").value], 2, by("harmony"), arr.totalTicks));
-  if ($("lead").checked) tracks.push(chunk("Lead", arr.leadProgram, 3, by("lead"), arr.totalTicks));
-  if ($("guide").checked) tracks.push(chunk("Chord Guide", 0, 4, by("guide"), arr.totalTicks));
+  const include = t => onlyTrack ? t === onlyTrack : $(t).checked;
+  if (include("drums")) tracks.push(chunk("Drums", null, 9, by("drums"), arr.totalTicks));
+  if (include("bass")) tracks.push(chunk("Bass", arr.bassProgram, 1, by("bass"), arr.totalTicks));
+  if (include("harmony")) tracks.push(chunk("Harmony", GENRE_STYLES[arr.genre].harmony[$("harmonySound").value], 2, by("harmony"), arr.totalTicks));
+  if (include("lead")) tracks.push(chunk("Lead", arr.leadProgram, 3, by("lead"), arr.totalTicks));
+  if (include("guide")) tracks.push(chunk("Chord Guide", 0, 4, by("guide"), arr.totalTicks));
   const head = [77, 84, 104, 100, 0, 0, 0, 6, 0, 1, (tracks.length >> 8) & 255, tracks.length & 255, (PPQ >> 8) & 255, PPQ & 255];
   return new Uint8Array([...head, ...tracks.flat()]);
 }
@@ -1074,7 +1086,7 @@ function exportStems() {
     const key = `${NOTE_NAMES[arrangement.key.tonic].replace("♯", "sharp").replace("♭", "flat")}-${arrangement.key.mode}`;
     tracks.forEach((t, i) => {
       setTimeout(() => {
-        const bytes = midi(arrangement);
+        const bytes = midi(arrangement, t);
         const blob = new Blob([bytes], { type: "audio/midi" });
         const a = document.createElement("a"), url = URL.createObjectURL(blob);
         a.href = url;
