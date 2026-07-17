@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Chord Arranger Studio v8.0</title>
+<title>Chord Arranger Studio v9.1 — Phase 1 Final</title>
 <style>
 :root{--bg:#f5f7fb;--panel:#fff;--ink:#172033;--muted:#667085;--accent:#5147e5;--accent2:#eeedff;--border:#d9dfeb;--ok:#137a4b;--err:#b42318;--dark:#101828}
 [data-theme="dark"]{--bg:#111827;--panel:#1f2937;--ink:#f3f4f6;--muted:#9ca3af;--accent:#818cf8;--accent2:#312e81;--border:#374151;--dark:#f3f4f6}
@@ -43,8 +43,8 @@ textarea{min-height:96px;resize:vertical}.row{display:grid;grid-template-columns
 <header>
 <div class="header-left">
 <span class="badge">AI-Powered Arrangement Engine</span>
-<h1>Chord Arranger Studio <span class="version">v8.0</span></h1>
-<div class="sub">Advanced MIDI generator with AI suggestions, key changes, MusicXML export, and undo/redo.</div>
+<h1>Chord Arranger Studio <span class="version">v9.1 — Phase 1 Final</span></h1>
+<div class="sub">Intelligent voice leading · Genre-specific bass · Section‑aware dynamics &amp; phrase‑level humanisation</div>
 </div>
 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
 <button class="secondary" id="themeToggle" title="Toggle dark mode">🌓</button>
@@ -58,7 +58,7 @@ textarea{min-height:96px;resize:vertical}.row{display:grid;grid-template-columns
 <section class="card">
 <label for="chords">Chord progression</label>
 <textarea id="chords">C | G | Am | F</textarea>
-<div class="help">Separate chords with bars, commas or line breaks. Add <code>(N)</code> for duration in bars. Add key changes: <code>C | G in D | Am</code></div>
+<div class="help">Separate chords with bars, commas or line breaks. Add <code>(N)</code> for duration in bars. Key changes are set per section (e.g. <code>Chorus:8 in G</code>).</div>
 <div class="row">
 <div><label for="key">Key</label><select id="key"></select></div>
 <div><label for="genre">Genre</label><select id="genre">
@@ -97,7 +97,7 @@ textarea{min-height:96px;resize:vertical}.row{display:grid;grid-template-columns
 
 <div class="row three">
 <div><label for="harmonySound">Harmony sound</label><select id="harmonySound"><option value="piano">Piano</option><option value="guitar">Guitar</option><option value="synth">Synth pad</option><option value="organ">Organ</option></select></div>
-<div><label for="voicingStyle">Voicing style</label><select id="voicingStyle"><option value="auto" selected>Auto (seed-varied)</option><option value="close">Close</option><option value="open">Open</option><option value="drop2">Drop 2</option><option value="rootless">Rootless</option></select></div>
+<div><label for="voicingStyle">Voicing style</label><select id="voicingStyle"><option value="auto" selected>Auto (smooth voice leading)</option><option value="close">Close</option><option value="open">Open</option><option value="drop2">Drop 2</option><option value="rootless">Rootless</option></select></div>
 <div><label for="ending">Ending</label><select id="ending"><option value="hold">Hold final chord</option><option value="stop">Clean stop</option><option value="hit">Final accent</option></select></div>
 </div>
 
@@ -158,6 +158,33 @@ const PPQ=480, BAR=PPQ*4, STEP=PPQ/4;
 const PC={C:0,D:2,E:4,F:5,G:7,A:9,B:11};
 const NOTE_NAMES=["C","C♯","D","E♭","E","F","F♯","G","A♭","A","B♭","B"];
 const QUAL={"": [0,4,7],m:[0,3,7],"5":[0,7,12],"6":[0,4,7,9],m6:[0,3,7,9],"7":[0,4,7,10],m7:[0,3,7,10],maj7:[0,4,7,11],"9":[0,4,7,10,14],m9:[0,3,7,10,14],maj9:[0,4,7,11,14],add9:[0,4,7,14],madd9:[0,3,7,14],sus2:[0,2,7],sus4:[0,5,7],dim:[0,3,6],dim7:[0,3,6,9],aug:[0,4,8],m7b5:[0,3,6,10]};
+
+// MusicXML chord kind mapping
+const MUSICXML_KINDS = {
+  '': 'major',
+  'm': 'minor',
+  '5': 'power',
+  '6': 'major-sixth',
+  'm6': 'minor-sixth',
+  '7': 'dominant',
+  'm7': 'minor-seventh',
+  'maj7': 'major-seventh',
+  '9': 'dominant-ninth',
+  'm9': 'minor-ninth',
+  'maj9': 'major-ninth',
+  'add9': 'major',
+  'madd9': 'minor',
+  'sus2': 'suspended-second',
+  'sus4': 'suspended-fourth',
+  'dim': 'diminished',
+  'dim7': 'diminished-seventh',
+  'aug': 'augmented',
+  'm7b5': 'half-diminished'
+};
+
+// Circle of fifths mapping for MusicXML
+const FIFTHS_MAJOR = {0:0,1:-5,2:2,3:-3,4:4,5:-1,6:6,7:1,8:-4,9:3,10:-2,11:5};
+const FIFTHS_MINOR = {0:-3,1:4,2:-1,3:6,4:1,5:-4,6:3,7:-2,8:5,9:0,10:-5,11:2};
 
 const GENRE_STYLES = {
   pop: { tempo: 110, bass: 33, harmony: {piano:0,guitar:25,synth:89,organ:16}, lead: 81, swing: 0, density: 3, complexity: 2 },
@@ -252,7 +279,6 @@ function restoreState(state) {
     $("lead").checked = state.tracks.lead;
     $("guide").checked = state.tracks.guide;
   }
-  // Update range outputs
   ["complexity","density","swing","humanise"].forEach(id => {
     const out = $(id+"Out");
     if (out) out.textContent = $(id).value + (id === "swing" ? "%" : id === "humanise" ? "%" : "");
@@ -276,7 +302,8 @@ function parseChordToken(raw) {
   const quality = m[3] || "";
   if (!Object.hasOwn(QUAL, quality)) throw Error(`Unsupported chord quality “${quality}”`);
   const root = pcOf(m[1] + m[2]);
-  return { name: token, root, bass: m[4] ? pcOf(m[4]) : root, quality, ints: QUAL[quality], minor: quality.startsWith("m") && !quality.startsWith("maj"), duration };
+  const bass = m[4] ? pcOf(m[4]) : root;
+  return { name: token, root, bass, quality, ints: QUAL[quality], minor: quality.startsWith("m") && !quality.startsWith("maj"), duration };
 }
 
 function parseChords(text) {
@@ -306,7 +333,7 @@ function expandSections(structure) {
   const out = [];
   for (const s of structure) {
     for (let i = 0; i < s.bars; i++) {
-      out.push({ name: s.name, index: i, length: s.bars, key: s.key });
+      out.push({ name: s.name, index: i, length: s.bars, key: s.key, keyMode: s.keyMode, keyLabel: s.keyLabel, sectionIndex: structure.indexOf(s), occurrence: structure.filter(x=>x.name===s.name).indexOf(s)+1 });
     }
   }
   return out;
@@ -336,7 +363,14 @@ function getSectionScale(section, fallbackKey) {
 
 function classify(name) {
   const n = name.toLowerCase();
-  return { intro: n.includes("intro"), verse: n.includes("verse"), chorus: n.includes("chorus") || n.includes("drop"), bridge: n.includes("bridge") || n.includes("break"), outro: n.includes("outro") };
+  return { 
+    intro: n.includes("intro"), 
+    verse: n.includes("verse"), 
+    chorus: n.includes("chorus") || n.includes("drop"), 
+    bridge: n.includes("bridge") || n.includes("break"), 
+    outro: n.includes("outro"),
+    preChorus: n.includes("pre") || n.includes("build") || n.includes("lift")
+  };
 }
 
 function midiAt(pc, target) {
@@ -347,85 +381,195 @@ function midiAt(pc, target) {
 }
 
 function add(events, track, tick, dur, pitch, vel, channel, group = "") {
-  events.push({ track, tick: Math.round(tick), dur: Math.max(24, Math.round(dur)), pitch: clamp(Math.round(pitch), 0, 127), vel: clamp(Math.round(vel), 1, 127), channel, group });
+  // Clamp tick to prevent negative values
+  const safeTick = Math.max(0, Math.round(tick));
+  events.push({ track, tick: safeTick, dur: Math.max(24, Math.round(dur)), pitch: clamp(Math.round(pitch), 0, 127), vel: clamp(Math.round(vel), 1, 127), channel, group });
 }
 
 function chordPCs(c) { return [...new Set(c.ints.slice(0, 5).map(i => (c.root + i) % 12))]; }
 
-function voicing(c, target = 58, count = 4, style = "close") {
-  let pcs = chordPCs(c);
-  if (style === "rootless") {
-    if (pcs.length >= 4) {
-      const stripped = pcs.filter(p => p !== c.root);
-      if (stripped.length) pcs = stripped;
-    } else {
-      const ninthPc = (c.root + 2) % 12;
-      const withoutRoot = pcs.filter(p => p !== c.root);
-      pcs = [...withoutRoot, ninthPc];
-    }
-  }
-  if ((style === "open" || style === "drop2") && pcs.length < count) {
-    const EXT = [14, 17, 21, 26];
-    let e = 0;
-    pcs = pcs.slice();
-    while (pcs.length < count) { pcs.push((c.root + EXT[e % EXT.length]) % 12); e++; }
-  }
-  let notes = pcs.map((p, i) => midiAt(p, target + i * 4));
-  if (c.bass !== c.root) notes[0] = midiAt(c.bass, target - 10);
-  notes = [...new Set(notes)].sort((a, b) => a - b);
-  if (style === "open" && notes.length >= 3) for (let i = 1; i < notes.length; i += 2) notes[i] -= 12;
-  if (style === "drop2" && notes.length >= 3) notes[notes.length - 2] -= 12;
-  notes = [...new Set(notes)].sort((a, b) => a - b);
-  while (notes.length > count) notes.pop();
-  return notes;
-}
-
-function autoKey(chords) {
+// ---------- voice leading ----------
+function generateVoicingCandidates(c, target=58, count=4, style="close", bassOverride=null, rng) {
   const candidates = [];
-  for (let tonic = 0; tonic < 12; tonic++) {
-    for (const mode of ["maj", "min"]) {
-      const scale = scalePCs({ tonic, mode });
-      let score = 0;
-      for (const c of chords) {
-        for (const p of chordPCs(c)) score += scale.includes(p) ? 2 : -2;
-        if (scale.includes(c.root)) score += 2;
+  const basePCs = chordPCs(c);
+  const bassPC = bassOverride !== null ? bassOverride : c.bass;
+  const root = c.root;
+  
+  const voicingStyles = style === "auto" ? ["close","open","drop2","rootless"] : [style];
+  
+  for (const st of voicingStyles) {
+    let pcs = basePCs.slice();
+    if (st === "rootless" && pcs.length >= 4) {
+      const stripped = pcs.filter(p => p !== root);
+      if (stripped.length) pcs = stripped;
+    } else if (st === "open" || st === "drop2") {
+      while (pcs.length < count) {
+        const EXT = [14, 17, 21, 26];
+        pcs.push((root + EXT[(pcs.length-1) % EXT.length]) % 12);
       }
-      candidates.push({ tonic, mode, score });
+    }
+    while (pcs.length < count) pcs.push((root + 7) % 12);
+    
+    // Generate true inversions: shift notes up an octave cyclically
+    for (let inv=0; inv<Math.min(4, pcs.length); inv++) {
+      let notes = pcs.map((p,i) => {
+        const idx = (i + inv) % pcs.length;
+        return midiAt(pcs[idx], target + i*4 + (idx < inv ? 12 : 0));
+      });
+      if (bassPC !== undefined && bassPC !== root) {
+        const bassNote = midiAt(bassPC, target-12);
+        notes = notes.filter(n => n !== bassNote);
+        notes.unshift(bassNote);
+      }
+      notes = [...new Set(notes)].sort((a,b)=>a-b);
+      if (st === "open" && notes.length >= 3) {
+        for (let i=1; i<notes.length; i+=2) notes[i] -= 12;
+      }
+      if (st === "drop2" && notes.length >= 3) {
+        const idx = notes.length-2;
+        notes[idx] -= 12;
+      }
+      notes = [...new Set(notes)].sort((a,b)=>a-b);
+      while (notes.length > count) notes.pop();
+      if (notes.length >= count && notes.every(n => n >= 28 && n <= 84)) {
+        candidates.push(notes.slice(0,count));
+      }
     }
   }
-  return candidates.sort((a, b) => b.score - a.score)[0];
-}
-
-function selectedKey(chords) {
-  if ($("key").value === "auto") return autoKey(chords);
-  const [tonic, mode] = $("key").value.split(":");
-  return { tonic: +tonic, mode };
-}
-
-function scalePCs(key) {
-  const ints = key.mode === "min" ? [0, 2, 3, 5, 7, 8, 10] : [0, 2, 4, 5, 7, 9, 11];
-  return ints.map(i => (key.tonic + i) % 12);
-}
-
-function velocity(base, rng, human) {
-  const amount = (human / 100) * 12;
-  return clamp(base + Math.round((rng() * 2 - 1) * amount), 1, 127);
-}
-
-function swingTick(tick, swing) {
-  if (!swing) return tick;
-  const inBeat = ((tick % PPQ) + PPQ) % PPQ;
-  const eighth = PPQ / 2;
-  if (Math.abs(inBeat - eighth) < 2) {
-    const target = PPQ * (swing / 100);
-    return tick + (target - eighth);
+  if (!candidates.length) {
+    const fallback = basePCs.slice(0,count).map((p,i)=>midiAt(p, target + i*4));
+    candidates.push(fallback);
   }
-  return tick;
+  return candidates;
+}
+
+function scoreVoiceLeading(prev, cand, genre="pop") {
+  if (!prev) return 0;
+  let score = 0;
+  const maxLen = Math.max(prev.length, cand.length);
+  for (let i=0; i<maxLen; i++) {
+    const a = i < prev.length ? prev[i] : prev[prev.length-1];
+    const b = i < cand.length ? cand[i] : cand[cand.length-1];
+    const diff = Math.abs(a-b);
+    if (diff > 12) score += diff * 2;
+    else if (diff > 7) score += diff * 1.5;
+    else score += diff;
+  }
+  const common = prev.filter(p => cand.includes(p));
+  score -= common.length * 2;
+  for (let i=0; i<cand.length-1; i++) {
+    if (cand[i] >= cand[i+1]) score += 3;
+  }
+  if (cand.some(n => n < 36)) score += 2;
+  if (cand.some(n => n > 88)) score += 1;
+  if (genre === "jazz") {
+    const rootPc = cand[0] % 12;
+    const has7 = cand.some(n => (n % 12) === ((rootPc + 10) % 12));
+    if (!has7) score += 2;
+  }
+  return score;
+}
+
+function chooseBestVoicing(c, prev, options, rng) {
+  const { target=58, count=4, style="close", genre="pop", bass=null } = options;
+  const candidates = generateVoicingCandidates(c, target, count, style, bass, rng);
+  if (!candidates.length) {
+    const pcs = chordPCs(c).slice(0,count);
+    return pcs.map((p,i) => midiAt(p, target + i*4));
+  }
+  let best = candidates[0];
+  let bestScore = Infinity;
+  // Each candidate gets its own seeded variation
+  for (let i=0; i<candidates.length; i++) {
+    const cand = candidates[i];
+    const seed = rng();
+    const sc = scoreVoiceLeading(prev, cand, genre) + (seed-0.5)*0.5;
+    if (sc < bestScore) {
+      bestScore = sc;
+      best = cand;
+    }
+  }
+  return best;
+}
+
+// ---------- section planning ----------
+function buildSectionPlan(structure, genre, density, complexity, seed) {
+  const plans = [];
+  const rng = rng32(seed);
+  
+  for (let i=0; i<structure.length; i++) {
+    const s = structure[i];
+    const name = s.name;
+    const cls = classify(name);
+    const occurrence = structure.filter(x=>x.name===name).indexOf(s)+1;
+    const isFirst = occurrence === 1;
+    const isFinal = occurrence === structure.filter(x=>x.name===name).length;
+    
+    let energy = 0.65;
+    let drumDensity = 0.6, bassActivity=0.5, harmonyWidth=0.6, harmonyRegister=58, leadActivity=0.4, velocityScale=0.8, fillIntensity=0.4, octaveDoubling=false;
+    
+    if (cls.intro) { energy=0.35; drumDensity=0.3; bassActivity=0.2; harmonyWidth=0.4; harmonyRegister=55; leadActivity=0.15; velocityScale=0.6; fillIntensity=0.2; octaveDoubling=false; }
+    else if (cls.preChorus) { energy=0.75; drumDensity=0.7; bassActivity=0.6; harmonyWidth=0.7; harmonyRegister=62; leadActivity=0.5; velocityScale=0.85; fillIntensity=0.5; octaveDoubling=false; }
+    else if (cls.verse) { energy=0.6; drumDensity=0.5; bassActivity=0.4; harmonyWidth=0.5; harmonyRegister=57; leadActivity=0.3; velocityScale=0.75; fillIntensity=0.3; octaveDoubling=false; }
+    else if (cls.chorus) { 
+      energy = 0.85 + (isFinal ? 0.1 : 0) + (occurrence > 1 ? 0.05 : 0);
+      drumDensity = 0.8 + (isFinal ? 0.1 : 0);
+      bassActivity = 0.7 + (isFinal ? 0.15 : 0);
+      harmonyWidth = 0.8 + (isFinal ? 0.1 : 0);
+      harmonyRegister = 62 + (occurrence > 1 ? 2 : 0);
+      leadActivity = 0.6 + (isFinal ? 0.15 : 0);
+      velocityScale = 0.9 + (isFinal ? 0.05 : 0);
+      fillIntensity = 0.6 + (isFinal ? 0.15 : 0);
+      octaveDoubling = true;
+    }
+    else if (cls.bridge) { energy=0.5; drumDensity=0.35; bassActivity=0.3; harmonyWidth=0.6; harmonyRegister=60; leadActivity=0.35; velocityScale=0.7; fillIntensity=0.3; octaveDoubling=false; }
+    else if (cls.outro) { energy=0.3; drumDensity=0.2; bassActivity=0.15; harmonyWidth=0.4; harmonyRegister=56; leadActivity=0.15; velocityScale=0.5; fillIntensity=0.1; octaveDoubling=false; }
+    
+    if (cls.preChorus && i < structure.length-1) {
+      const next = structure[i+1];
+      if (classify(next.name).chorus) {
+        energy += 0.1;
+        drumDensity += 0.1;
+        bassActivity += 0.1;
+      }
+    }
+    
+    if (genre === "rock") { drumDensity = Math.min(1, drumDensity+0.1); bassActivity = Math.min(1, bassActivity+0.1); }
+    if (genre === "jazz") { harmonyWidth = Math.min(1, harmonyWidth+0.1); }
+    if (genre === "house") { drumDensity = Math.min(1, drumDensity+0.1); bassActivity = Math.min(1, bassActivity+0.1); }
+    if (genre === "ambient" || genre === "drone") { drumDensity *= 0.3; bassActivity *= 0.4; energy *= 0.8; }
+    
+    const dScale = density/3;
+    const cScale = complexity/3;
+    energy = clamp(energy * (0.8 + 0.2 * dScale), 0.2, 0.98);
+    drumDensity = clamp(drumDensity * (0.7 + 0.3 * dScale), 0.1, 1);
+    bassActivity = clamp(bassActivity * (0.7 + 0.3 * dScale), 0.1, 1);
+    harmonyWidth = clamp(harmonyWidth * (0.7 + 0.3 * cScale), 0.3, 1);
+    leadActivity = clamp(leadActivity * (0.5 + 0.5 * dScale), 0.05, 0.9);
+    
+    const r = rng();
+    plans.push({
+      name: name,
+      occurrence: occurrence,
+      isFirst: isFirst,
+      isFinal: isFinal,
+      energy: clamp(energy + (r-0.5)*0.03, 0.1, 0.99),
+      drumDensity: clamp(drumDensity + (r-0.5)*0.03, 0.05, 1),
+      bassActivity: clamp(bassActivity + (r-0.5)*0.03, 0.05, 1),
+      harmonyWidth: clamp(harmonyWidth + (r-0.5)*0.03, 0.2, 1),
+      harmonyRegister: Math.round(clamp(harmonyRegister + (r-0.5)*4, 45, 72)),
+      leadActivity: clamp(leadActivity + (r-0.5)*0.03, 0.02, 0.95),
+      velocityScale: clamp(velocityScale + (r-0.5)*0.03, 0.3, 1),
+      fillIntensity: clamp(fillIntensity + (r-0.5)*0.03, 0.02, 0.95),
+      octaveDoubling: octaveDoubling || (r>0.7 && energy>0.7)
+    });
+  }
+  return plans;
 }
 
 function sectionEnergy(sec) {
   const c = classify(sec.name);
-  return c.chorus ? 1 : c.verse ? .78 : c.bridge ? .68 : c.intro ? .5 : c.outro ? .55 : .72;
+  return c.chorus ? 0.9 : c.verse ? 0.65 : c.bridge ? 0.55 : c.intro ? 0.4 : c.outro ? 0.35 : 0.6;
 }
 
 function masterTimeline() {
@@ -450,180 +594,633 @@ function masterTimeline() {
   const harmonyArticulation = $("harmonyArticulation").value;
   const arpTicks = { 4: PPQ, 8: PPQ / 2, 16: STEP }[$("arpRate").value] || PPQ / 2;
   const ending = $("ending").value;
-  
-  return { chords, structure, sections, bars, genre, key, tempo, seed, complexity, density, swing, human, voicingStyleSetting, rng, bassProgram, leadProgram, harmonyArticulation, arpTicks, ending, totalBars: sections.length, totalTicks: sections.length * BAR };
+  const sectionPlan = buildSectionPlan(structure, genre, density, complexity, seed);
+  return { chords, structure, sections, bars, genre, key, tempo, seed, complexity, density, swing, human, voicingStyleSetting, rng, bassProgram, leadProgram, harmonyArticulation, arpTicks, ending, totalBars: sections.length, totalTicks: sections.length * BAR, sectionPlan };
 }
 
-function groove(style, part, energy, density, complexity) {
-  const chorus = energy > .9, busy = density >= 4, complex = complexity >= 4;
-  const G = {
-    pop: { drums: { kick: chorus ? [0, 8, 11] : [0, 8], snare: [4, 12], hat: busy ? [0, 2, 4, 6, 8, 10, 12, 14] : [0, 4, 8, 12] }, bass: chorus ? [0, 6, 8, 14] : [0, 6, 8, 14], harmony: chorus ? [0, 2, 4, 7, 8, 10, 12, 14] : [0, 3, 6, 8, 11, 14] },
-    indie: { drums: { kick: [0, 6, 8, 14], snare: [4, 12], hat: [0, 3, 4, 7, 8, 11, 12, 15] }, bass: [0, 4, 6, 10, 12, 14], harmony: [0, 4, 8, 12, 14] },
-    cinematic: { drums: { kick: chorus ? [0, 6, 8, 11, 14] : [0, 8], snare: [4, 12], hat: [0, 4, 8, 12] }, bass: [0, 4, 8, 12], harmony: complex ? [0, 2, 4, 6, 8, 10, 12, 14] : [0, 4, 8, 12] },
-    drone: { drums: { kick: [0], snare: [], hat: [6, 14] }, bass: [0], harmony: [0, 6, 12] },
-    rock: { drums: { kick: chorus ? [0, 6, 8, 14] : [0, 8], snare: [4, 12], hat: busy ? [0, 2, 4, 6, 8, 10, 12, 14] : [0, 4, 8, 12] }, bass: chorus ? [0, 2, 4, 6, 8, 10, 12, 14] : [0, 4, 8, 12], harmony: chorus ? [0, 2, 6, 8, 10, 14] : [0, 6, 8, 14] },
-    jazz: { drums: { kick: [0, 8], snare: [4, 12], hat: [0, 3, 4, 7, 8, 11, 12, 15] }, bass: [0, 4, 8, 12], harmony: complex ? [0, 3, 6, 9, 12, 15] : [0, 6, 10, 14] },
-    house: { drums: { kick: [0, 4, 8, 12], snare: [4, 12], hat: [2, 6, 10, 14] }, bass: [2, 6, 10, 14], harmony: chorus ? [0, 2, 4, 6, 8, 10, 12, 14] : [0, 4, 8, 12] },
-    ambient: { drums: { kick: [0], snare: [], hat: [6, 14] }, bass: [0], harmony: [0, 6, 12] }
-  };
-  return G[style] ? G[style][part] : G.pop[part];
+function selectedKey(chords) {
+  if ($("key").value === "auto") {
+    const candidates = [];
+    for (let tonic=0; tonic<12; tonic++) {
+      for (const mode of ["maj","min"]) {
+        const scale = scalePCs({ tonic, mode });
+        let score=0;
+        for (const c of chords) {
+          for (const p of chordPCs(c)) score += scale.includes(p) ? 2 : -2;
+          if (scale.includes(c.root)) score += 2;
+        }
+        candidates.push({ tonic, mode, score });
+      }
+    }
+    return candidates.sort((a,b)=>b.score-a.score)[0];
+  }
+  const [tonic, mode] = $("key").value.split(":");
+  return { tonic: +tonic, mode };
+}
+
+function scalePCs(key) {
+  const ints = key.mode === "min" ? [0,2,3,5,7,8,10] : [0,2,4,5,7,9,11];
+  return ints.map(i=>(key.tonic+i)%12);
+}
+
+// Seeded random helpers - all musical generation uses seeded RNG
+function seededRandom(rng) { return rng(); }
+
+function seededFilter(arr, rng, prob) {
+  return arr.filter(() => rng() < prob);
+}
+
+function seededChoose(arr, rng) {
+  return arr[Math.floor(rng() * arr.length)];
+}
+
+function velocity(base, rng, human, accent=0) {
+  const amount = (human/100)*12;
+  const acc = accent * 12;
+  return clamp(base + Math.round((rng()*2-1)*amount + acc), 1, 127);
+}
+
+function swingTick(tick, swing) {
+  if (!swing) return tick;
+  const inBeat = ((tick%PPQ)+PPQ)%PPQ;
+  const eighth = PPQ/2;
+  if (Math.abs(inBeat-eighth) < 2) {
+    const target = PPQ * (swing/100);
+    return tick + (target - eighth);
+  }
+  return tick;
 }
 
 function sectionRng(song, label) {
   return rng32(((song.seed * 2654435761) ^ hashStr(label)) >>> 0);
 }
 
-function hashStr(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h >>> 0; }
+function hashStr(s) { let h=0; for (let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))|0; return h>>>0; }
+
+// ---------- groove patterns ----------
+function groove(style, part, energy, density, complexity) {
+  const chorus = energy > .7, busy = density >= 3, complex = complexity >= 3;
+  const G = {
+    pop: { drums: { kick: chorus ? [0,8,11] : [0,8], snare: [4,12], hat: busy ? [0,2,4,6,8,10,12,14] : [0,4,8,12] }, bass: chorus ? [0,6,8,14] : [0,6,8,14], harmony: chorus ? [0,2,4,7,8,10,12,14] : [0,3,6,8,11,14] },
+    indie: { drums: { kick: [0,6,8,14], snare: [4,12], hat: [0,3,4,7,8,11,12,15] }, bass: [0,4,6,10,12,14], harmony: [0,4,8,12,14] },
+    cinematic: { drums: { kick: chorus ? [0,6,8,11,14] : [0,8], snare: [4,12], hat: [0,4,8,12] }, bass: [0,4,8,12], harmony: complex ? [0,2,4,6,8,10,12,14] : [0,4,8,12] },
+    drone: { drums: { kick: [0], snare: [], hat: [6,14] }, bass: [0], harmony: [0,6,12] },
+    rock: { drums: { kick: chorus ? [0,6,8,14] : [0,8], snare: [4,12], hat: busy ? [0,2,4,6,8,10,12,14] : [0,4,8,12] }, bass: chorus ? [0,2,4,6,8,10,12,14] : [0,4,8,12], harmony: chorus ? [0,2,6,8,10,14] : [0,6,8,14] },
+    jazz: { drums: { kick: [0,8], snare: [4,12], hat: [0,3,4,7,8,11,12,15] }, bass: [0,4,8,12], harmony: complex ? [0,3,6,9,12,15] : [0,6,10,14] },
+    house: { drums: { kick: [0,4,8,12], snare: [4,12], hat: [2,6,10,14] }, bass: [2,6,10,14], harmony: chorus ? [0,2,4,6,8,10,12,14] : [0,4,8,12] },
+    ambient: { drums: { kick: [0], snare: [], hat: [6,14] }, bass: [0], harmony: [0,6,12] }
+  };
+  return G[style] ? G[style][part] : G.pop[part];
+}
 
 function perturbSteps(base, rng, addProb, removeProb) {
   const set = new Set(base);
   for (const s of [...set]) if (s !== 0 && rng() < removeProb) set.delete(s);
-  for (let s = 0; s < 16; s++) if (!set.has(s) && rng() < addProb) set.add(s);
-  return [...set].sort((a, b) => a - b);
+  for (let s=0; s<16; s++) if (!set.has(s) && rng() < addProb) set.add(s);
+  return [...set].sort((a,b)=>a-b);
 }
 
-function proceduralDrums(song, sec, energy) {
-  const base = groove(song.genre, "drums", energy, song.density, song.complexity);
-  const r = sectionRng(song, "drums:" + sec.name);
-  const addP = 0.04 + 0.18 * 0.5 * energy;
-  const remP = 0.05 + 0.10 * 0.5;
-  return { kick: perturbSteps(base.kick, r, addP * 0.8, remP * 0.6), snare: perturbSteps(base.snare, r, addP * 0.5, remP * 0.4), hat: perturbSteps(base.hat, r, addP * 1.1, remP * 0.8) };
-}
-
-function proceduralSteps(song, part, sec, energy) {
-  const base = groove(song.genre, part, energy, song.density, song.complexity);
-  const r = sectionRng(song, part + ":" + sec.name);
-  const addP = 0.05 + 0.2 * 0.5 * energy;
+// Generate a phrase pattern for a section - bars 1-3 establish, bar 4 varies, bars 5-7 repeat, bar 8 transitions
+function generatePhrasePattern(song, part, sec, plan, bar, partType) {
+  const energy = plan ? plan.energy : sectionEnergy(sec);
+  const basePattern = groove(song.genre, part, energy, song.density, song.complexity);
+  // Use partType to get the specific array (kick, snare, hat)
+  const base = Array.isArray(basePattern) ? basePattern : (basePattern[partType] || []);
+  const r = sectionRng(song, part + ":" + partType + ":" + sec.name + ":" + Math.floor(sec.index/4));
+  const activity = plan ? (part==="drums" ? plan.drumDensity : 1) : 0.8;
+  const addP = 0.05 + 0.2 * 0.5 * energy * activity;
   const remP = 0.05 + 0.12 * 0.5;
-  return perturbSteps(base, r, addP, remP);
+  
+  let steps = perturbSteps(base, r, addP, remP);
+  
+  // Phrase shaping based on bar position within section (using sec.index)
+  const barInSection = sec.index;
+  const barInPhrase = barInSection % 4;
+  if (barInPhrase === 3) {
+    // Bar 4: add variation
+    const extra = Math.floor(r() * 16);
+    if (!steps.includes(extra)) steps.push(extra);
+  }
+  if (barInPhrase === 0 && barInSection > 0) {
+    // Bar 1 of new phrase: slight reset or variation
+    steps = steps.filter((_,i) => i % 2 === 0 || r() > 0.3);
+  }
+  return steps.sort((a,b)=>a-b);
 }
 
-function effectiveVoicingStyle(song, label) {
-  if (song.voicingStyleSetting !== "auto") return song.voicingStyleSetting;
-  const r = sectionRng(song, "voicing:" + label);
-  const opts = ["close", "open", "drop2", "rootless"];
-  return opts[Math.floor(r() * opts.length)];
-}
-
-function articulateChord(events, tick, dur, notes, vel, style, arpTicks, group) {
-  if (style === "block" || notes.length < 2) {
-    for (const n of notes) add(events, "harmony", tick, dur, n, vel, 2, group);
-    return;
-  }
-  if (style === "strumDown" || style === "strumUp") {
-    const ordered = style === "strumDown" ? notes.slice().sort((a, b) => b - a) : notes.slice().sort((a, b) => a - b);
-    const gap = Math.max(4, Math.min(18, Math.floor(dur / (ordered.length * 3))));
-    ordered.forEach((n, i) => { const t = tick + i * gap; add(events, "harmony", t, Math.max(24, dur - i * gap), n, vel, 2, group); });
-    return;
-  }
-  let seq = notes.slice().sort((a, b) => a - b);
-  if (style === "arpDown") seq = seq.slice().reverse();
-  if (style === "arpUpDown" && seq.length > 2) seq = [...seq, ...seq.slice(1, -1).reverse()];
-  const step = Math.max(30, arpTicks || Math.floor(dur / seq.length));
-  let t = tick, idx = 0;
-  while (t < tick + dur - 12) {
-    add(events, "harmony", t, Math.min(step - 6, tick + dur - t), seq[idx % seq.length], vel, 2, group);
-    t += step;
-    idx++;
-  }
-}
-
+// ---------- drums ----------
 function generateDrums(song, events) {
-  for (let b = 0; b < song.totalBars; b++) {
-    const sec = song.sections[b], energy = sectionEnergy(sec), g = proceduralDrums(song, sec, energy), base = b * BAR;
-    for (const s of (g.kick || [])) add(events, "drums", swingTick(base + s * STEP, song.swing), 70, 36, velocity(88 + energy * 22, song.rng, song.human), 9);
-    for (const s of (g.snare || [])) add(events, "drums", swingTick(base + s * STEP, song.swing), 65, 38, velocity(90 + energy * 20, song.rng, song.human), 9);
-    for (const s of (g.hat || [])) add(events, "drums", swingTick(base + s * STEP, song.swing), 30, song.genre === "jazz" ? 51 : (s % 4 === 2 ? 46 : 42), velocity(43 + energy * 18, song.rng, song.human), 9);
+  for (let b=0; b<song.totalBars; b++) {
+    const sec = song.sections[b];
+    const plan = song.sectionPlan[sec.sectionIndex];
+    const energy = plan ? plan.energy : sectionEnergy(sec);
+    const r = sectionRng(song, "drums:" + sec.name + ":" + b);
+    const drumDensity = plan ? plan.drumDensity : 0.8;
+    
+    // Generate kick, snare and hat patterns independently
+    const kickSteps = generatePhrasePattern(song, "drums", sec, plan, b, "kick")
+      .filter(() => r() < drumDensity);
+    const snareSteps = generatePhrasePattern(song, "drums", sec, plan, b, "snare")
+      .filter(() => r() < 0.9);
+    const hatSteps = generatePhrasePattern(song, "drums", sec, plan, b, "hat")
+      .filter(() => r() < drumDensity);
+    
+    const baseTick = b*BAR;
+    const velScale = plan ? plan.velocityScale : 0.8;
+    
+    for (const s of kickSteps) {
+      const accent = s===0 ? 8 : (s===4 ? 4 : 0);
+      const offset = song.genre === "house" ? 0 : (song.human > 0 ? Math.round((r()-0.5)*song.human*0.03) : 0);
+      add(events, "drums", swingTick(baseTick+s*STEP, song.swing)+offset, 70, 36, 
+        velocity(88+ (plan ? plan.energy*22 : 0), r, song.human, accent)*velScale, 9);
+    }
+    for (const s of snareSteps) {
+      const accent = s===4 || s===12 ? 4 : 0;
+      // Snare slightly behind beat for Rock/Jazz
+      let snareOffset = 0;
+      if (song.genre === "rock" || song.genre === "jazz") {
+        snareOffset = Math.round((0.2 + r()*0.3)*song.human*0.07);
+      }
+      add(events, "drums", swingTick(baseTick+s*STEP, song.swing)+snareOffset, 65, 38, 
+        velocity(90+ (plan ? plan.energy*20 : 0), r, song.human, accent)*velScale, 9);
+    }
+    for (const s of hatSteps) {
+      const offset = song.human > 0 ? Math.round((r()-0.5)*song.human*0.02) : 0;
+      add(events, "drums", swingTick(baseTick+s*STEP, song.swing)+offset, 30, 
+        song.genre==="jazz"?51:(s%4===2?46:42), 
+        velocity(43+ (plan ? plan.energy*18 : 0), r, song.human)*velScale, 9);
+    }
+  }
+}
+
+// ---------- bass engines ----------
+function generateApproach(nextRoot, currentKey, genre, rng) {
+  const opts = [];
+  if (genre === "jazz") {
+    opts.push((nextRoot-1+12)%12);
+    opts.push((nextRoot+1)%12);
+    opts.push((nextRoot-2+12)%12);
+  } else if (genre === "indie") {
+    opts.push((nextRoot-1+12)%12);
+    opts.push((nextRoot-2+12)%12);
+    opts.push((nextRoot+5)%12);
+  } else if (genre === "pop") {
+    opts.push((nextRoot-1+12)%12);
+    opts.push((nextRoot+7)%12);
+  } else if (genre === "rock") {
+    opts.push((nextRoot-1+12)%12);
+    opts.push((nextRoot+5)%12);
+  } else if (genre === "house") {
+    opts.push(nextRoot);
+    opts.push((nextRoot+12)%12);
+  } else {
+    opts.push((nextRoot-1+12)%12);
+  }
+  return opts[Math.floor(rng() * opts.length)];
+}
+
+function bassPop(song, events, b, c, sec, plan) {
+  const energy = plan ? plan.energy : sectionEnergy(sec);
+  const base = b*BAR;
+  const r = sectionRng(song, "bass:"+sec.name+":"+b);
+  const steps = generatePhrasePattern(song, "bass", sec, plan, b, "bass");
+  const nextChord = b+1 < song.bars.length ? song.bars[b+1] : c;
+  const nextRoot = nextChord.root;
+  const approach = generateApproach(nextRoot, song.key, "pop", r);
+  const bassActivity = plan ? plan.bassActivity : 0.7;
+  
+  steps.forEach((s,i) => {
+    if (r() > bassActivity) return;
+    let pc = c.bass;
+    if (i===0) pc = c.bass;
+    else if (i===steps.length-1 && steps.length>2 && r() < 0.3) pc = approach;
+    else if (i%2===0 && r() < 0.5) pc = (c.root+7)%12;
+    let p = midiAt(pc, 38);
+    const nextTick = i+1 < steps.length ? base+steps[i+1]*STEP : base+BAR;
+    const dur = Math.min(nextTick-(base+s*STEP)-24, STEP*3);
+    if (dur > 24) {
+      const offset = song.human > 0 ? Math.round((r()-0.5)*song.human*0.06) : 0;
+      add(events, "bass", swingTick(base+s*STEP, song.swing)+offset, dur, p, 
+        velocity(78+energy*16, r, song.human), 1);
+    }
+  });
+}
+
+function bassRock(song, events, b, c, sec, plan) {
+  const energy = plan ? plan.energy : sectionEnergy(sec);
+  const base = b*BAR;
+  const r = sectionRng(song, "bass:"+sec.name+":"+b);
+  const steps = generatePhrasePattern(song, "bass", sec, plan, b, "bass");
+  const nextChord = b+1 < song.bars.length ? song.bars[b+1] : c;
+  const nextRoot = nextChord.root;
+  const approach = generateApproach(nextRoot, song.key, "rock", r);
+  const bassActivity = plan ? plan.bassActivity : 0.9;
+  
+  steps.forEach((s,i) => {
+    if (r() > bassActivity) return;
+    let pc = c.bass;
+    if (i===0 || i%2===0) pc = c.bass;
+    else if (i===steps.length-1 && steps.length>2 && r() < 0.3) pc = approach;
+    else pc = (c.root+7)%12;
+    let p = midiAt(pc, 38);
+    if (i%2===0 && energy>0.7) p += 12;
+    const nextTick = i+1 < steps.length ? base+steps[i+1]*STEP : base+BAR;
+    const dur = Math.min(nextTick-(base+s*STEP)-24, STEP*3);
+    if (dur > 24) {
+      const offset = song.human > 0 ? Math.round((r()-0.5)*song.human*0.04) : 0;
+      add(events, "bass", swingTick(base+s*STEP, song.swing)+offset, dur, p, 
+        velocity(85+energy*18, r, song.human), 1);
+    }
+  });
+}
+
+function bassIndie(song, events, b, c, sec, plan) {
+  const energy = plan ? plan.energy : sectionEnergy(sec);
+  const base = b*BAR;
+  const r = sectionRng(song, "bass:"+sec.name+":"+b);
+  const steps = generatePhrasePattern(song, "bass", sec, plan, b, "bass");
+  const nextChord = b+1 < song.bars.length ? song.bars[b+1] : c;
+  const nextRoot = nextChord.root;
+  const approach = generateApproach(nextRoot, song.key, "indie", r);
+  const bassActivity = plan ? plan.bassActivity : 0.7;
+  const third = c.minor ? 3 : 4;
+  const hook = [c.bass, (c.root+third)%12, (c.root+7)%12, (c.root+2)%12];
+  
+  steps.forEach((s,i) => {
+    if (r() > bassActivity) return;
+    let pc = hook[i % hook.length];
+    if (i===steps.length-1 && steps.length>2 && r() < 0.4) pc = approach;
+    let p = midiAt(pc, 38);
+    if (i%3===0 && energy>0.6) p += 12;
+    const nextTick = i+1 < steps.length ? base+steps[i+1]*STEP : base+BAR;
+    const dur = Math.min(nextTick-(base+s*STEP)-24, STEP*3);
+    if (dur > 24) {
+      const offset = song.human > 0 ? Math.round((r()-0.5)*song.human*0.07) : 0;
+      add(events, "bass", swingTick(base+s*STEP, song.swing)+offset, dur, p, 
+        velocity(80+energy*16, r, song.human), 1);
+    }
+  });
+}
+
+function bassJazz(song, events, b, c, sec, plan) {
+  const energy = plan ? plan.energy : sectionEnergy(sec);
+  const base = b*BAR;
+  const r = sectionRng(song, "bass:"+sec.name+":"+b);
+  const nextChord = b+1 < song.bars.length ? song.bars[b+1] : c;
+  const nextRoot = nextChord.root;
+  const approach = generateApproach(nextRoot, song.key, "jazz", r);
+  const roots = [c.bass, (c.root+(c.minor?3:4))%12, (c.root+7)%12, approach];
+  const bassActivity = plan ? plan.bassActivity : 0.9;
+  
+  for (let i=0; i<4; i++) {
+    if (r() > bassActivity) continue;
+    const pc = roots[i % roots.length];
+    const p = midiAt(pc, 38);
+    const tick = base + i*PPQ;
+    const offset = song.human > 0 ? Math.round((r()-0.5)*song.human*0.05) : 0;
+    add(events, "bass", swingTick(tick, song.swing)+offset, PPQ-24, p, 
+      velocity(82+energy*14, r, song.human), 1);
+  }
+}
+
+function bassHouse(song, events, b, c, sec, plan) {
+  const energy = plan ? plan.energy : sectionEnergy(sec);
+  const base = b*BAR;
+  const r = sectionRng(song, "bass:"+sec.name+":"+b);
+  const steps = [2,6,10,14];
+  const bassActivity = plan ? plan.bassActivity : 0.9;
+  
+  steps.forEach((s,i) => {
+    if (r() > bassActivity) return;
+    // True octave alternation: calculate MIDI pitch first, then add 12
+    const rootMidi = midiAt(c.bass, 38);
+    const p = i % 2 === 0 ? rootMidi : rootMidi + 12;
+    // Kick timing: bass slightly behind kick for house
+    const offset = song.human > 0 ? Math.round((r()-0.5)*song.human*0.03) : 0;
+    add(events, "bass", swingTick(base+s*STEP, song.swing)+offset, STEP-24, 
+      clamp(p, 0, 127), velocity(80+energy*15, r, song.human), 1);
+  });
+}
+
+function bassCinematic(song, events, b, c, sec, plan) {
+  const energy = plan ? plan.energy : sectionEnergy(sec);
+  const base = b*BAR;
+  const r = sectionRng(song, "bass:"+sec.name+":"+b);
+  const pc = c.bass;
+  const p = midiAt(pc, 36);
+  const dur = energy > 0.6 ? BAR/2 : BAR;
+  const bassActivity = plan ? plan.bassActivity : 0.7;
+  if (r() < bassActivity) {
+    const offset = song.human > 0 ? Math.round((r()-0.5)*song.human*0.08) : 0;
+    add(events, "bass", base+offset, dur-24, p, velocity(70+energy*20, r, song.human), 1);
+    if (energy > 0.7 && plan && plan.octaveDoubling && r() < 0.3) {
+      const p2 = midiAt((c.root+7)%12, 48);
+      add(events, "bass", base+PPQ*2+offset, dur-24, p2, velocity(65+energy*15, r, song.human), 1);
+    }
+  }
+}
+
+function bassAmbient(song, events, b, c, sec, plan) {
+  const base = b*BAR;
+  const r = sectionRng(song, "bass:"+sec.name+":"+b);
+  const pc = c.bass;
+  const p = midiAt(pc, 36);
+  const bassActivity = plan ? plan.bassActivity : 0.4;
+  if (r() < bassActivity) {
+    const offset = song.human > 0 ? Math.round((r()-0.5)*song.human*0.1) : 0;
+    add(events, "bass", base+offset, BAR-24, p, velocity(60, r, song.human), 1);
+  }
+}
+
+function bassDrone(song, events, b, c, sec, plan) {
+  const base = b*BAR;
+  const r = sectionRng(song, "bass:"+sec.name+":"+b);
+  const pc = c.bass;
+  const p = midiAt(pc, 32);
+  // Sustain for full chord duration
+  // Find how many bars this chord lasts
+  let span = 1;
+  while (b + span < song.totalBars && 
+         song.bars[b + span].root === c.root && 
+         song.bars[b + span].quality === c.quality) {
+    span++;
+  }
+  // Only play if we're at the start of a chord
+  if (b === 0 || 
+      song.bars[b-1].root !== c.root || 
+      song.bars[b-1].quality !== c.quality) {
+    const dur = span * BAR - 24;
+    const offset = song.human > 0 ? Math.round((r()-0.5)*song.human*0.05) : 0;
+    add(events, "bass", base+offset, dur, p, velocity(55, r, song.human), 1);
   }
 }
 
 function generateBass(song, events) {
-  for (let b = 0; b < song.totalBars; b++) {
-    const c = song.bars[b], sec = song.sections[b], energy = sectionEnergy(sec), steps = proceduralSteps(song, "bass", sec, energy), base = b * BAR;
-    const sectionKey = getSectionKey(sec, song.key.tonic);
-    const rootInKey = c.root;
-    steps.forEach((s, i) => {
-      let pc = c.bass;
-      const useWalk = song.genre === "jazz" || song.genre === "blues" || song.rng() < 0.3;
-      if (useWalk) {
-        const walk = [c.bass, (c.root + (c.minor ? 3 : 4)) % 12, (c.root + 7) % 12, (sectionKey + 11) % 12];
-        pc = walk[i % 4];
-      } else if (i % 4 === 3 && song.complexity >= 3) pc = (c.root + 7) % 12;
-      let p = midiAt(pc, song.genre === "funk" ? 35 : 38);
-      if (song.genre === "house" && i === steps.length - 1 && energy > .85) p += 12;
-      const nextTick = i + 1 < steps.length ? base + steps[i + 1] * STEP : base + BAR;
-      add(events, "bass", swingTick(base + s * STEP, song.swing), Math.min(nextTick - (base + s * STEP) - 24, STEP * 3), p, velocity(78 + energy * 16, song.rng, song.human), 1);
-    });
+  for (let b=0; b<song.totalBars; b++) {
+    const c = song.bars[b];
+    const sec = song.sections[b];
+    const plan = song.sectionPlan[sec.sectionIndex];
+    const genre = song.genre;
+    if (genre === "pop") bassPop(song,events,b,c,sec,plan);
+    else if (genre === "rock") bassRock(song,events,b,c,sec,plan);
+    else if (genre === "indie") bassIndie(song,events,b,c,sec,plan);
+    else if (genre === "jazz") bassJazz(song,events,b,c,sec,plan);
+    else if (genre === "house") bassHouse(song,events,b,c,sec,plan);
+    else if (genre === "cinematic") bassCinematic(song,events,b,c,sec,plan);
+    else if (genre === "ambient") bassAmbient(song,events,b,c,sec,plan);
+    else if (genre === "drone") bassDrone(song,events,b,c,sec,plan);
+    else bassPop(song,events,b,c,sec,plan);
   }
+}
+
+// ---------- harmony ----------
+function applyHarmonicDecoration(c, genre, complexity, rng) {
+  const prob = Math.min(0.4, complexity * 0.08);
+  if (rng() > prob) return c;
+  const decorated = {...c};
+  const root = c.root;
+  if (genre === "rock") return c;
+  
+  if (genre === "jazz") {
+    if (rng() < 0.3 && !c.quality.includes("9") && !c.quality.includes("13")) {
+      decorated.ints = [...c.ints, 14];
+    }
+  } else if (genre === "ambient" || genre === "cinematic") {
+    if (rng() < 0.3) {
+      const hasThird = c.ints.includes(4) || c.ints.includes(3);
+      if (hasThird) {
+        decorated.ints = c.ints.filter(i => i !== 4 && i !== 3);
+        decorated.ints.push(2);
+      }
+      decorated.ints.push(7);
+    }
+  } else if (genre === "pop" || genre === "indie") {
+    if (rng() < 0.2) {
+      decorated.ints = [...new Set([...c.ints, 14])];
+    }
+    if (rng() < 0.15) {
+      const hasThird = c.ints.includes(4) || c.ints.includes(3);
+      if (hasThird) {
+        decorated.ints = c.ints.filter(i => i !== 4 && i !== 3);
+        decorated.ints.push(2);
+      }
+    }
+  }
+  return decorated;
+}
+
+function rockHarmony(c, rng, energy) {
+  // Root, fifth, octave - deterministic using seeded RNG
+  const rootMidi = midiAt(c.root, 48);
+  const fifthMidi = midiAt((c.root+7)%12, 48);
+  const octaveMidi = midiAt(c.root, 60);
+  let notes = [rootMidi, fifthMidi, octaveMidi];
+  // Occasionally add third during quieter sections
+  if (energy < 0.55 && rng() < 0.4) {
+    const third = c.minor ? (c.root+3)%12 : (c.root+4)%12;
+    notes.push(midiAt(third, 48));
+  }
+  return [...new Set(notes)].sort((a,b)=>a-b);
 }
 
 function generateHarmony(song, events) {
   const attacks = [];
-  for (let b = 0; b < song.totalBars; b++) {
-    const c = song.bars[b], sec = song.sections[b], energy = sectionEnergy(sec), steps = proceduralSteps(song, "harmony", sec, energy), base = b * BAR;
-    const vstyle = effectiveVoicingStyle(song, "H:" + sec.name);
-    const notes = (song.genre === "rock" ? [midiAt(c.root, 48), midiAt((c.root + 7) % 12, 55), midiAt(c.root, 60)] : voicing(c, song.genre === "ambient" ? 52 : 58, song.complexity >= 4 ? 5 : 4, vstyle));
+  let prevVoicing = null;
+  for (let b=0; b<song.totalBars; b++) {
+    const c = song.bars[b];
+    const sec = song.sections[b];
+    const plan = song.sectionPlan[sec.sectionIndex];
+    const energy = plan ? plan.energy : sectionEnergy(sec);
+    const steps = generatePhrasePattern(song, "harmony", sec, plan, b, "harmony");
+    const base = b*BAR;
+    const r = sectionRng(song, "harmony:" + sec.name + ":" + b);
+    const vstyle = effectiveVoicingStyle(song, "H:"+sec.name, plan);
+    let target = plan ? plan.harmonyRegister : 58;
+    const count = song.complexity >= 4 ? 5 : 4;
+    
+    let notes;
+    if (song.genre === "rock") {
+      notes = rockHarmony(c, r, energy);
+    } else {
+      const decorated = applyHarmonicDecoration(c, song.genre, song.complexity, r);
+      const voicingOptions = { 
+        target, 
+        count, 
+        style: vstyle, 
+        genre: song.genre, 
+        bass: c.bass !== c.root ? c.bass : null 
+      };
+      notes = chooseBestVoicing(decorated, prevVoicing, voicingOptions, r);
+    }
+    prevVoicing = notes;
+    
+    let finalNotes = notes;
+    if (plan && plan.octaveDoubling && energy > 0.7 && song.genre !== "rock") {
+      const doubled = notes.map(n => n+12).filter(n => n < 88);
+      finalNotes = [...notes, ...doubled].slice(0,6);
+    }
+    
     attacks[b] = [];
-    steps.forEach((s, i) => {
-      const tick = swingTick(base + s * STEP, song.swing);
-      const next = i + 1 < steps.length ? swingTick(base + steps[i + 1] * STEP, song.swing) : base + BAR;
-      let gate = .62;
-      if (["funk", "reggae"].includes(song.genre)) gate = .28;
-      if (song.genre === "house") gate = .48;
-      if (song.genre === "ambient" || song.genre === "drone") gate = .9;
-      const dur = Math.max(48, (next - tick) * gate);
+    steps.forEach((s,i) => {
+      const tick = swingTick(base+s*STEP, song.swing);
+      const next = i+1 < steps.length ? swingTick(base+steps[i+1]*STEP, song.swing) : base+BAR;
+      let gate = 0.62;
+      if (song.genre==="house") gate=0.48;
+      if (song.genre==="ambient" || song.genre==="drone") gate=0.9;
+      if (song.genre==="cinematic") gate=0.85;
+      if (song.genre==="rock") gate=0.5 + energy*0.3;
+      const dur = Math.max(48, (next-tick)*gate);
       attacks[b].push(tick);
-      articulateChord(events, tick, dur, notes, velocity(54 + energy * 23 + (i === 0 ? 5 : 0), song.rng, song.human), song.harmonyArticulation, song.arpTicks, `H${b}:${i}`);
+      const vel = velocity(54+energy*23+(i===0?5:0), r, song.human, i===0 ? 8 : 0);
+      const offset = song.human > 0 ? Math.round((r()-0.5)*song.human*0.06) : 0;
+      articulateChord(events, tick+offset, dur, finalNotes, vel, song.harmonyArticulation, song.arpTicks, `H${b}:${i}`, song.human, r);
     });
   }
   return attacks;
 }
 
+function articulateChord(events, tick, dur, notes, vel, style, arpTicks, group, humaniseAmount, rng) {
+  if (style === "block" || notes.length < 2) {
+    const offset = humaniseAmount > 0 ? Math.round((rng()-0.5)*humaniseAmount*0.03) : 0;
+    for (const n of notes) add(events, "harmony", tick+offset, dur, n, vel, 2, group);
+    return;
+  }
+  if (style === "strumDown" || style === "strumUp") {
+    const ordered = style === "strumDown" ? notes.slice().sort((a,b)=>b-a) : notes.slice().sort((a,b)=>a-b);
+    const gap = Math.max(4, Math.min(18, Math.floor(dur/(ordered.length*3))));
+    ordered.forEach((n,i)=>{ 
+      const t=tick+i*gap; 
+      add(events, "harmony", t, Math.max(24, dur-i*gap), n, vel, 2, group); 
+    });
+    return;
+  }
+  let seq = notes.slice().sort((a,b)=>a-b);
+  if (style === "arpDown") seq = seq.slice().reverse();
+  if (style === "arpUpDown" && seq.length > 2) seq = [...seq, ...seq.slice(1,-1).reverse()];
+  const step = Math.max(30, arpTicks || Math.floor(dur/seq.length));
+  let t=tick, idx=0;
+  while (t < tick+dur-12) {
+    const offset = humaniseAmount > 0 ? Math.round((rng()-0.5)*humaniseAmount*0.02) : 0;
+    add(events, "harmony", t+offset, Math.min(step-6, tick+dur-t), seq[idx%seq.length], vel, 2, group);
+    t += step; idx++;
+  }
+}
+
+function effectiveVoicingStyle(song, label, plan) {
+  if (song.voicingStyleSetting !== "auto") return song.voicingStyleSetting;
+  const r = sectionRng(song, "voicing:" + label);
+  const genre = song.genre;
+  if (genre === "rock") return "close";
+  if (genre === "jazz") return r() > 0.5 ? "rootless" : "close";
+  if (genre === "house") return "close";
+  if (genre === "ambient" || genre === "drone") return "open";
+  if (genre === "cinematic") return "open";
+  if (genre === "indie") return r() > 0.5 ? "open" : "close";
+  const opts = ["close","open","drop2"];
+  if (plan && plan.harmonyWidth > 0.7) opts.push("open");
+  return opts[Math.floor(r() * opts.length)];
+}
+
+// ---------- lead ----------
 function generateLead(song, events, harmonyAttacks) {
   let previous = null;
-  for (let b = 0; b < song.totalBars; b++) {
-    const sec = song.sections[b], energy = sectionEnergy(sec);
-    let ons = harmonyAttacks[b] || [b * BAR];
-    if (ons.length > 5) ons = ons.filter((_, i) => i % 2 === 0);
-    if (song.density <= 2) ons = ons.filter((_, i) => i % 2 === 0);
-    if (!ons.length) ons = [b * BAR];
+  
+  for (let b=0; b<song.totalBars; b++) {
+    const sec = song.sections[b];
+    const plan = song.sectionPlan[sec.sectionIndex];
+    const energy = plan ? plan.energy : sectionEnergy(sec);
+    const leadActivity = plan ? plan.leadActivity : 0.4;
+    const r = sectionRng(song, "lead:" + sec.name + ":" + b);
+    
+    let ons = harmonyAttacks[b] || [b*BAR];
+    const targetCount = Math.max(1, Math.round(ons.length * leadActivity * 0.7));
+    const selected = [];
+    for (let i=0; i<Math.min(ons.length, targetCount); i++) {
+      const idx = Math.floor(i * ons.length / targetCount);
+      selected.push(ons[idx % ons.length]);
+    }
+    if (!selected.length) selected.push(b*BAR);
+    
+    if (b%4 === 3 && leadActivity > 0.3 && r() < 0.4) {
+      selected.push(b*BAR + BAR - STEP*2);
+    }
+    
     const keyScale = scalePCs(getSectionScale(sec, song.key));
     const chord = chordPCs(song.bars[b]);
-    const safe = chord.filter(p => keyScale.includes(p));
+    const safe = chord.filter(p=>keyScale.includes(p));
     const anchors = safe.length ? safe : chord;
-    const register = Math.round(64 + 16 + (song.genre === "house" ? 4 : 0));
-    let prev = previous;
-    ons.forEach((tick, i) => {
-      const pool = i === 0 ? anchors : keyScale;
-      const pc = pool[(i * 2 + Math.floor(song.rng() * pool.length)) % pool.length];
+    const register = Math.round(64 + 16 + (song.genre==="house"?4:0));
+    
+    selected.sort((a,b)=>a-b);
+    let prevPitch = previous;
+    
+    selected.forEach((tick,i) => {
+      if (r() < 0.15 && i>0 && i<selected.length-1) return;
+      
+      const isStrong = (tick % BAR) < PPQ/2;
+      const pool = isStrong ? anchors : keyScale;
+      let pc = pool[(i*2 + Math.floor(r()*pool.length)) % pool.length];
+      
+      if (prevPitch !== null) {
+        const candidate = midiAt(pc, register);
+        const diff = Math.abs(candidate - prevPitch);
+        if (diff > 12) {
+          pc = anchors[Math.floor(r()*anchors.length)];
+        }
+      }
+      
       const pitch = midiAt(pc, register);
-      const next = i + 1 < ons.length ? ons[i + 1] : (b + 1) * BAR;
-      const dur = Math.max(60, (next - tick) * (song.genre === "ambient" || song.genre === "drone" ? .72 : .55));
-      add(events, "lead", tick, dur, pitch, velocity(65 + energy * 18, song.rng, song.human), 3, `L${b}:${i}`);
+      const next = i+1 < selected.length ? selected[i+1] : (b+1)*BAR;
+      const dur = Math.max(60, (next-tick) * (song.genre==="ambient"||song.genre==="drone"?0.72:0.55));
+      
+      let accent = 0;
+      const barInPhrase = (b - sec.index) % 4;
+      if (barInPhrase === 3 && i === selected.length-1) accent = 6;
+      if (barInPhrase === 0 && i === 0) accent = -4;
+      
+      const offset = song.human > 0 ? Math.round((r()-0.5)*song.human*0.08) : 0;
+      add(events, "lead", tick+offset, dur, pitch, 
+        velocity(65+energy*18, r, song.human, accent), 3, `L${b}:${i}`);
+      prevPitch = pitch;
       previous = pitch;
     });
   }
 }
 
+// ---------- guide ----------
 function generateGuide(song, events) {
-  let b = 0;
+  let b=0;
+  let prevVoicing = null;
   while (b < song.totalBars) {
     const c = song.bars[b];
-    let span = 1;
-    while (b + span < song.totalBars && song.bars[b + span].name === c.name) span++;
-    const vstyle = effectiveVoicingStyle(song, "guide:" + b);
-    for (const n of voicing(c, 57, 5, vstyle)) add(events, "guide", b * BAR, span * BAR - 24, n, 55, 4);
+    let span=1;
+    while (b+span < song.totalBars && song.bars[b+span].name === c.name) span++;
+    const sec = song.sections[b];
+    const plan = song.sectionPlan[sec.sectionIndex];
+    const r = sectionRng(song, "guide:" + sec.name + ":" + b);
+    const vstyle = effectiveVoicingStyle(song, "guide:"+b, plan);
+    const notes = chooseBestVoicing(c, prevVoicing, { target:57, count:5, style:vstyle, genre:"pop", bass:c.bass !== c.root ? c.bass : null }, r);
+    prevVoicing = notes;
+    for (const n of notes) add(events, "guide", b*BAR, span*BAR-24, n, 55, 4);
     b += span;
   }
 }
 
+// ---------- finish ----------
 function finishSong(song, events) {
   if (song.ending === "stop") return;
-  const finalBar = song.totalBars - 1, c = song.bars[finalBar], tick = finalBar * BAR + (song.ending === "hit" ? 3 * PPQ : 0), dur = song.ending === "hit" ? PPQ * .9 : BAR - 24;
-  for (const n of voicing(c, 58, 5, effectiveVoicingStyle(song, "ending"))) add(events, "harmony", tick, dur, n, 92, 2, "ending");
-  if (song.ending === "hit") add(events, "drums", tick, 100, 49, 115, 9, "ending");
+  const finalBar = song.totalBars-1;
+  const c = song.bars[finalBar];
+  const tick = finalBar*BAR + (song.ending==="hit"?3*PPQ:0);
+  const dur = song.ending==="hit" ? PPQ*0.9 : BAR-24;
+  const r = sectionRng(song, "ending");
+  let prevVoicing = null;
+  const notes = chooseBestVoicing(c, prevVoicing, { target:58, count:5, style:effectiveVoicingStyle(song,"ending",null), genre:song.genre, bass:c.bass !== c.root ? c.bass : null }, r);
+  for (const n of notes) add(events, "harmony", tick, dur, n, 92, 2, "ending");
+  if (song.ending==="hit") add(events, "drums", tick, 100, 49, 115, 9, "ending");
 }
 
+// ---------- build arrangement ----------
 function buildArrangement() {
   const song = masterTimeline();
   const events = [];
@@ -633,26 +1230,26 @@ function buildArrangement() {
   generateLead(song, events, attacks);
   generateGuide(song, events);
   finishSong(song, events);
-  events.sort((a, b) => a.tick - b.tick || a.track.localeCompare(b.track) || a.pitch - b.pitch);
+  events.sort((a,b)=>a.tick-b.tick || a.track.localeCompare(b.track) || a.pitch-b.pitch);
   return { ...song, events, attacks };
 }
 
+// ---------- render ----------
 function render(arr) {
   const counts = {};
   for (const e of arr.events) counts[e.track] = (counts[e.track] || 0) + 1;
-  const keyName = `${NOTE_NAMES[arr.key.tonic]} ${arr.key.mode === "min" ? "minor" : "major"}`;
-  const lines = [`${arr.genre.toUpperCase()} · ${arr.tempo} BPM · ${keyName} · ${arr.totalBars} bars · seed ${arr.seed}`, "", ...arr.structure.map(s => `${s.name.padEnd(14)} ${String(s.bars).padStart(3)} bars${s.key !== null && s.key !== undefined ? ` in ${s.keyLabel || NOTE_NAMES[s.key]}` : ""}`), "", "BAR  SECTION        CHORD"];
-  for (let b = 0; b < Math.min(arr.totalBars, 48); b++) {
-    const secKey = arr.sections[b].key !== null && arr.sections[b].key !== undefined ? ` in ${NOTE_NAMES[arr.sections[b].key]}` : "";
-    lines.push(`${String(b + 1).padStart(3, "0")}  ${arr.sections[b].name.padEnd(14)} ${arr.bars[b].name}`);
+  const keyName = `${NOTE_NAMES[arr.key.tonic]} ${arr.key.mode==="min"?"minor":"major"}`;
+  const lines = [`${arr.genre.toUpperCase()} · ${arr.tempo} BPM · ${keyName} · ${arr.totalBars} bars · seed ${arr.seed}`, "", ...arr.structure.map(s => `${s.name.padEnd(14)} ${String(s.bars).padStart(3)} bars${s.key!==null && s.key!==undefined ? ` in ${s.keyLabel || NOTE_NAMES[s.key]}` : ""}`), "", "BAR  SECTION        CHORD"];
+  for (let b=0; b<Math.min(arr.totalBars,48); b++) {
+    lines.push(`${String(b+1).padStart(3,"0")}  ${arr.sections[b].name.padEnd(14)} ${arr.bars[b].name}`);
   }
-  if (arr.totalBars > 48) lines.push(`… ${arr.totalBars - 48} more bars`);
-  lines.push("", `Events: drums ${counts.drums || 0} · bass ${counts.bass || 0} · harmony ${counts.harmony || 0} · lead ${counts.lead || 0} · guide ${counts.guide || 0}`);
+  if (arr.totalBars > 48) lines.push(`… ${arr.totalBars-48} more bars`);
+  lines.push("", `Events: drums ${counts.drums||0} · bass ${counts.bass||0} · harmony ${counts.harmony||0} · lead ${counts.lead||0} · guide ${counts.guide||0}`);
   $("output").textContent = lines.join("\n");
   $("stats").textContent = `Shared clock: ${PPQ} PPQ · ${arr.events.length} total events`;
-  const colors = ["#5147e5", "#0f9f6e", "#d97706", "#b42318", "#2563eb", "#7c3aed", "#0891b2", "#d946ef"];
+  const colors = ["#5147e5","#0f9f6e","#d97706","#b42318","#2563eb","#7c3aed","#0891b2","#d946ef"];
   $("timeline").innerHTML = "";
-  arr.structure.forEach((s, i) => {
+  arr.structure.forEach((s,i) => {
     const el = document.createElement("span");
     el.style.flex = String(s.bars);
     el.style.background = colors[i % colors.length];
@@ -665,13 +1262,9 @@ function render(arr) {
   renderBarEditor(arr);
 }
 
-// AI Suggestions
+// ---------- AI suggestions ----------
 function generateAISuggestions() {
   const current = $("chords").value.trim();
-  const genres = ["pop", "indie", "cinematic", "drone", "rock", "jazz", "house", "ambient"];
-  const suggestions = [];
-  
-  // Chord progression suggestions
   const progressions = [
     ["C | G | Am | F", "I-V-vi-IV (Pop classic)"],
     ["C | Am | F | G", "50s Doo-Wop"],
@@ -683,8 +1276,7 @@ function generateAISuggestions() {
     ["Em | C | G | D", "Aeolian power"],
     ["Am | Dm | G | C", "Circle progression"]
   ];
-  
-  // Generate suggestions based on current
+  const suggestions = [];
   if (current.includes("C") && current.includes("G")) {
     suggestions.push(["C | G | Am | F", "Axis progression"]);
     suggestions.push(["C | Am | F | G", "Doo-Wop variant"]);
@@ -693,16 +1285,13 @@ function generateAISuggestions() {
     suggestions.push(["Am | F | C | G", "Minor pop"]);
     suggestions.push(["Am | G | F | E", "Andalusian"]);
   }
-  
-  // Add random progressions
-  for (let i = 0; i < 3; i++) {
+  for (let i=0; i<3; i++) {
     const idx = Math.floor(Math.random() * progressions.length);
-    if (!suggestions.find(s => s[0] === progressions[idx][0])) {
+    if (!suggestions.find(s=>s[0]===progressions[idx][0])) {
       suggestions.push(progressions[idx]);
     }
   }
-  
-  return suggestions.slice(0, 6);
+  return suggestions.slice(0,6);
 }
 
 function renderAISuggestions() {
@@ -711,7 +1300,6 @@ function renderAISuggestions() {
   container.innerHTML = suggestions.map(([chords, label]) => 
     `<span class="ai-suggestion" data-chords="${chords}">${label}: ${chords}</span>`
   ).join("");
-  
   container.querySelectorAll(".ai-suggestion").forEach(el => {
     el.addEventListener("click", () => {
       $("chords").value = el.dataset.chords;
@@ -731,8 +1319,7 @@ function suggestStructure() {
     "Verse:8, Chorus:8, Verse:8, Chorus:8, Bridge:4, Chorus:8, Outro:4",
     "Intro:4 in Am, Verse:8 in Am, Chorus:8 in C, Verse:8 in Am, Chorus:8 in C, Bridge:4 in F, Chorus:8 in C, Outro:4 in Am"
   ];
-  const selected = structures[Math.floor(Math.random() * structures.length)];
-  $("structure").value = selected;
+  $("structure").value = structures[Math.floor(Math.random() * structures.length)];
   saveState();
   generate();
   $("status").querySelector("span").textContent = "✅ Applied suggested structure with key changes!";
@@ -740,7 +1327,7 @@ function suggestStructure() {
 }
 
 function suggestStyle() {
-  const genres = ["pop", "indie", "cinematic", "drone", "rock", "jazz", "house", "ambient"];
+  const genres = ["pop","indie","cinematic","drone","rock","jazz","house","ambient"];
   const selected = genres[Math.floor(Math.random() * genres.length)];
   $("genre").value = selected;
   $("tempo").value = GENRE_STYLES[selected].tempo;
@@ -750,76 +1337,82 @@ function suggestStyle() {
   $("status").className = "status ok";
 }
 
-// Export functions
+// ---------- MusicXML export ----------
 function exportMusicXML(arr) {
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
 <score-partwise version="4.0">
-  <work>
-    <work-title>Chord Arranger Studio</work-title>
-  </work>
+  <work><work-title>Chord Arranger Studio</work-title></work>
   <identification>
     <creator type="composer">AI Generator</creator>
-    <encoding>
-      <software>Chord Arranger Studio v8.0</software>
-      <encoding-date>${new Date().toISOString().split('T')[0]}</encoding-date>
-    </encoding>
+    <encoding><software>Chord Arranger Studio v9.1</software><encoding-date>${new Date().toISOString().split('T')[0]}</encoding-date></encoding>
   </identification>
-  <defaults>
-    <scaling>
-      <millimeters>7.06</millimeters>
-      <tenths>40</tenths>
-    </scaling>
-  </defaults>
-  <part-list>
-    <score-part id="P1">
-      <part-name>Piano</part-name>
-    </score-part>
-  </part-list>
+  <defaults><scaling><millimeters>7.06</millimeters><tenths>40</tenths></scaling></defaults>
+  <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
   <part id="P1">`;
+  let measure=1;
+  const ticksPerBeat=PPQ/4;
+  const beatsPerBar=4;
+  let currentKey = arr.key.tonic;
+  let currentMode = arr.key.mode;
   
-  // Add measures
-  let measure = 1;
-  let currentTime = 0;
-  const ticksPerBeat = PPQ / 4;
-  const beatsPerBar = 4;
-  
-  for (let b = 0; b < arr.totalBars; b++) {
+  for (let b=0; b<arr.totalBars; b++) {
     const chord = arr.bars[b];
     const sec = arr.sections[b];
-    const keyName = NOTE_NAMES[arr.key.tonic];
-    const keyMode = arr.key.mode === "min" ? "minor" : "major";
+    const sectionKey = sec.key !== null && sec.key !== undefined ? sec.key : arr.key.tonic;
+    const sectionMode = sec.keyMode || arr.key.mode;
+    let keyXML = "";
+    if (b===0 || sectionKey !== currentKey || sectionMode !== currentMode) {
+      currentKey = sectionKey;
+      currentMode = sectionMode;
+      const fifths = currentMode === "min" ? FIFTHS_MINOR[currentKey] : FIFTHS_MAJOR[currentKey];
+      const modeName = currentMode === "min" ? "minor" : "major";
+      keyXML = `<key><fifths>${fifths}</fifths><mode>${modeName}</mode></key>`;
+    }
+    
+    // Correct pitch mapping with alter
+    const notePC = chord.root % 12;
+    const stepNames = ["C","C","D","D","E","F","F","G","G","A","A","B"];
+    const step = stepNames[notePC];
+    const alter = [0,1,0,1,0,0,1,0,1,0,1,0][notePC];
+    const octave = 4 + Math.floor((chord.root % 12) / 7);
+    
+    // Get MusicXML chord kind
+    const kind = MUSICXML_KINDS[chord.quality] || "major";
+    
+    // Slash chord handling
+    let bassNote = "";
+    if (chord.bass !== chord.root) {
+      const bassPC = chord.bass % 12;
+      const bassStep = stepNames[bassPC];
+      const bassAlter = [0,1,0,1,0,0,1,0,1,0,1,0][bassPC];
+      bassNote = `<bass><bass-step>${bassStep}</bass-step>${bassAlter !== 0 ? `<bass-alter>${bassAlter}</bass-alter>` : ''}</bass>`;
+    }
     
     xml += `
     <measure number="${measure}">
       <attributes>
         <divisions>${ticksPerBeat}</divisions>
-        <key>
-          <fifths>${(arr.key.tonic + 3) % 12 - 3}</fifths>
-          <mode>${keyMode}</mode>
-        </key>
-        <time>
-          <beats>${beatsPerBar}</beats>
-          <beat-type>4</beat-type>
-        </time>
+        ${keyXML}
+        <time><beats>${beatsPerBar}</beats><beat-type>4</beat-type></time>
         <staves>1</staves>
-        <clef>
-          <sign>G</sign>
-          <line>2</line>
-        </clef>
+        <clef><sign>G</sign><line>2</line></clef>
       </attributes>
-      <direction placement="above">
-        <direction-type>
-          <words>${chord.name}</words>
-        </direction-type>
-        <staff>1</staff>
-      </direction>
+      <harmony>
+        <root>
+          <root-step>${step}</root-step>
+          ${alter !== 0 ? `<root-alter>${alter}</root-alter>` : ''}
+        </root>
+        <kind>${kind}</kind>
+        ${bassNote}
+      </harmony>
       <note>
         <pitch>
-          <step>${["C","D","E","F","G","A","B"][chord.root % 7]}</step>
-          <octave>${4 + Math.floor((chord.root % 12) / 7)}</octave>
+          <step>${step}</step>
+          ${alter !== 0 ? `<alter>${alter}</alter>` : ''}
+          <octave>${octave}</octave>
         </pitch>
-        <duration>${ticksPerBeat * 4}</duration>
+        <duration>${ticksPerBeat*4}</duration>
         <voice>1</voice>
         <type>whole</type>
         <stem>up</stem>
@@ -827,22 +1420,18 @@ function exportMusicXML(arr) {
     </measure>`;
     measure++;
   }
-  
-  xml += `
-  </part>
-</score-partwise>`;
-  
+  xml += `</part></score-partwise>`;
   return xml;
 }
 
-// Render functions
+// ---------- render structure/bar editors ----------
 function renderStructureEditor(arr) {
   const el = $("structureEditor");
-  el.innerHTML = arr.structure.map((s, i) => `
+  el.innerHTML = arr.structure.map((s,i) => `
     <div class="editRow" data-section="${i}">
-      <input type="text" class="secName" value="${s.name.replace(/"/g, "&quot;")}">
+      <input type="text" class="secName" value="${s.name.replace(/"/g,"&quot;")}">
       <input type="number" class="secBars" min="1" max="128" value="${s.bars}">
-      <input type="text" class="secKey" placeholder="Key" value="${s.key !== null && s.key !== undefined ? (s.keyLabel || NOTE_NAMES[s.key]) : ''}" style="width:50px;padding:4px;font-size:13px;">
+      <input type="text" class="secKey" placeholder="Key" value="${s.key!==null && s.key!==undefined ? (s.keyLabel||NOTE_NAMES[s.key]) : ''}" style="width:50px;padding:4px;font-size:13px;">
       <button class="remove" data-remove="${i}" type="button" title="Remove section">✕</button>
     </div>
   `).join("");
@@ -850,33 +1439,33 @@ function renderStructureEditor(arr) {
 }
 
 function renderBarEditor(arr) {
-  const el = $("barEditor"), cap = 200;
-  el.innerHTML = arr.bars.slice(0, cap).map((c, i) => `
+  const el = $("barEditor"), cap=200;
+  el.innerHTML = arr.bars.slice(0,cap).map((c,i) => `
     <div class="editRow" data-bar="${i}">
       <span>Bar ${i+1} · ${arr.sections[i].name}</span>
-      <input type="text" class="barChord" value="${c.name.replace(/"/g, "&quot;")}">
+      <input type="text" class="barChord" value="${c.name.replace(/"/g,"&quot;")}">
     </div>
-  `).join("") + (arr.bars.length > cap ? `<div class="editRow"><span>… ${arr.bars.length-cap} more bars</span></div>` : "");
+  `).join("") + (arr.bars.length>cap ? `<div class="editRow"><span>… ${arr.bars.length-cap} more bars</span></div>` : "");
 }
 
 function collapseBarsToChordString(names) {
-  const tokens = [];
-  let i = 0;
-  while (i < names.length) {
-    let j = i;
-    while (j + 1 < names.length && names[j + 1] === names[i]) j++;
-    const count = j - i + 1;
-    tokens.push(count > 1 ? `${names[i]}(${count})` : names[i]);
-    i = j + 1;
+  const tokens=[]; let i=0;
+  while (i<names.length) {
+    let j=i;
+    while (j+1<names.length && names[j+1]===names[i]) j++;
+    const count=j-i+1;
+    tokens.push(count>1 ? `${names[i]}(${count})` : names[i]);
+    i=j+1;
   }
   return tokens.join(" | ");
 }
 
-let arrangement = null, audioCtx = null, active = [], timer = null, scheduler = null, playState = null, noiseBuffer = null;
+// ---------- preview / audio ----------
+let arrangement=null, audioCtx=null, active=[], timer=null, scheduler=null, playState=null, noiseBuffer=null;
 
 function ensureAudio() {
-  if (!audioCtx) audioCtx = new(window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx.state === "suspended") audioCtx.resume();
+  if (!audioCtx) audioCtx = new(window.AudioContext||window.webkitAudioContext)();
+  if (audioCtx.state==="suspended") audioCtx.resume();
   return audioCtx;
 }
 
@@ -884,343 +1473,297 @@ function noise(ctx) {
   if (!noiseBuffer) {
     noiseBuffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
     const d = noiseBuffer.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    for (let i=0; i<d.length; i++) d[i] = Math.random()*2-1;
   }
   return noiseBuffer;
 }
 
-function tone(ctx, dest, when, dur, pitch, vel, type) {
-  const o = ctx.createOscillator(), g = ctx.createGain();
-  o.type = type;
-  o.frequency.value = 440 * Math.pow(2, (pitch - 69) / 12);
-  const peak = (vel / 127) * .16, end = when + Math.max(.045, dur);
-  g.gain.setValueAtTime(.0001, when);
-  g.gain.exponentialRampToValueAtTime(Math.max(.002, peak), when + .006);
-  g.gain.exponentialRampToValueAtTime(.0001, end);
-  o.connect(g);
-  g.connect(dest);
-  o.start(when);
-  o.stop(end + .02);
+function tone(ctx,dest,when,dur,pitch,vel,type) {
+  const o=ctx.createOscillator(), g=ctx.createGain();
+  o.type=type;
+  o.frequency.value=440*Math.pow(2,(pitch-69)/12);
+  const peak=(vel/127)*0.16, end=when+Math.max(0.045,dur);
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.002, peak), when+0.006);
+  g.gain.exponentialRampToValueAtTime(0.0001, end);
+  o.connect(g); g.connect(dest);
+  o.start(when); o.stop(end+0.02);
   active.push(o);
 }
 
-function drum(ctx, dest, when, pitch, vel) {
-  const v = vel / 127;
-  if (pitch === 36) {
-    const o = ctx.createOscillator(), g = ctx.createGain();
-    o.frequency.setValueAtTime(145, when);
-    o.frequency.exponentialRampToValueAtTime(45, when + .13);
-    g.gain.setValueAtTime(v * .65, when);
-    g.gain.exponentialRampToValueAtTime(.001, when + .18);
-    o.connect(g);
-    g.connect(dest);
-    o.start(when);
-    o.stop(when + .2);
+function drum(ctx,dest,when,pitch,vel) {
+  const v=vel/127;
+  if (pitch===36) {
+    const o=ctx.createOscillator(), g=ctx.createGain();
+    o.frequency.setValueAtTime(145,when);
+    o.frequency.exponentialRampToValueAtTime(45,when+0.13);
+    g.gain.setValueAtTime(v*0.65,when);
+    g.gain.exponentialRampToValueAtTime(0.001,when+0.18);
+    o.connect(g); g.connect(dest);
+    o.start(when); o.stop(when+0.2);
     active.push(o);
     return;
   }
-  const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-  s.buffer = noise(ctx);
-  f.type = pitch === 38 ? "bandpass" : "highpass";
-  f.frequency.value = pitch === 38 ? 1800 : 6500;
-  const len = pitch === 46 ? .16 : pitch === 49 ? .28 : .06;
-  g.gain.setValueAtTime(v * .38, when);
-  g.gain.exponentialRampToValueAtTime(.001, when + len);
-  s.connect(f);
-  f.connect(g);
-  g.connect(dest);
-  s.start(when);
-  s.stop(when + len + .02);
+  const s=ctx.createBufferSource(), f=ctx.createBiquadFilter(), g=ctx.createGain();
+  s.buffer=noise(ctx);
+  f.type=pitch===38?"bandpass":"highpass";
+  f.frequency.value=pitch===38?1800:6500;
+  const len=pitch===46?0.16:pitch===49?0.28:0.06;
+  g.gain.setValueAtTime(v*0.38,when);
+  g.gain.exponentialRampToValueAtTime(0.001,when+len);
+  s.connect(f); f.connect(g); g.connect(dest);
+  s.start(when); s.stop(when+len+0.02);
   active.push(s);
 }
 
 function waveform(track, genre) {
-  if (track === "bass") return "triangle";
-  if (track === "lead") return (genre === "house" || genre === "metal" || genre === "rock") ? "sawtooth" : "triangle";
-  if (track === "guide") return "sine";
-  return $("harmonySound").value === "synth" ? "sawtooth" : $("harmonySound").value === "organ" ? "square" : "sine";
+  if (track==="bass") return "triangle";
+  if (track==="lead") return (genre==="house"||genre==="rock")?"sawtooth":"triangle";
+  if (track==="guide") return "sine";
+  return $("harmonySound").value==="synth"?"sawtooth":$("harmonySound").value==="organ"?"square":"sine";
 }
 
 function stopPreview() {
   if (scheduler) clearInterval(scheduler);
   if (timer) clearTimeout(timer);
-  scheduler = timer = null;
-  if (audioCtx) { const now = audioCtx.currentTime; active.forEach(n => { try { n.stop(now); } catch {} }); }
-  active = [];
-  playState = null;
-  $("preview").dataset.playing = "0";
-  $("preview").textContent = "▶ Preview";
-  $("progress").style.width = "0%";
+  scheduler=timer=null;
+  if (audioCtx) { const now=audioCtx.currentTime; active.forEach(n=>{ try{n.stop(now)}catch{} }); }
+  active=[]; playState=null;
+  $("preview").dataset.playing="0";
+  $("preview").textContent="▶ Preview";
+  $("progress").style.width="0%";
 }
 
 function preview() {
   stopPreview();
   try {
-    arrangement = buildArrangement();
+    arrangement=buildArrangement();
     render(arrangement);
-    const ctx = ensureAudio(), master = ctx.createGain();
-    master.gain.value = .42;
+    const ctx=ensureAudio(), master=ctx.createGain();
+    master.gain.value=0.42;
     master.connect(ctx.destination);
-    const secTick = 60 / (arrangement.tempo * PPQ), start = ctx.currentTime + .12, playEvents = arrangement.events.filter(e => $(e.track).checked !== false);
-    playState = { index: 0, start, secTick, events: playEvents, total: arrangement.totalTicks * secTick };
-    const look = .18;
-    scheduler = setInterval(() => {
+    const secTick=60/(arrangement.tempo*PPQ), start=ctx.currentTime+0.12, playEvents=arrangement.events.filter(e=>$(e.track).checked!==false);
+    playState={ index:0, start, secTick, events:playEvents, total:arrangement.totalTicks*secTick };
+    const look=0.18;
+    scheduler=setInterval(()=>{
       if (!playState) return;
-      const now = ctx.currentTime, until = now + look;
-      while (playState.index < playEvents.length) {
-        const e = playEvents[playState.index], when = start + e.tick * secTick;
-        if (when > until) break;
-        if (e.track === "drums") drum(ctx, master, when, e.pitch, e.vel);
-        else tone(ctx, master, when, e.dur * secTick, e.pitch, e.vel, waveform(e.track, arrangement.genre));
+      const now=ctx.currentTime, until=now+look;
+      while (playState.index<playEvents.length) {
+        const e=playEvents[playState.index], when=start+e.tick*secTick;
+        if (when>until) break;
+        if (e.track==="drums") drum(ctx,master,when,e.pitch,e.vel);
+        else tone(ctx,master,when,e.dur*secTick,e.pitch,e.vel,waveform(e.track,arrangement.genre));
         playState.index++;
       }
-      const elapsed = Math.max(0, now - start);
-      $("progress").style.width = `${clamp(elapsed / playState.total * 100, 0, 100)}%`;
-    }, 25);
-    timer = setTimeout(() => { stopPreview(); $("status").className = "status ok"; $("status").querySelector("span").textContent = "Preview finished."; }, (playState.total + .4) * 1000);
-    $("preview").dataset.playing = "1";
-    $("preview").textContent = "■ Stop";
-    $("status").className = "status ok";
-    $("status").querySelector("span").textContent = "Previewing…";
-  } catch (e) {
-    $("status").className = "status err";
-    $("status").querySelector("span").textContent = `Error: ${e.message}`;
+      const elapsed=Math.max(0,now-start);
+      $("progress").style.width=`${clamp(elapsed/playState.total*100,0,100)}%`;
+    },25);
+    timer=setTimeout(()=>{ stopPreview(); $("status").className="status ok"; $("status").querySelector("span").textContent="Preview finished."; }, (playState.total+0.4)*1000);
+    $("preview").dataset.playing="1";
+    $("preview").textContent="■ Stop";
+    $("status").className="status ok";
+    $("status").querySelector("span").textContent="Previewing…";
+  } catch(e) {
+    $("status").className="status err";
+    $("status").querySelector("span").textContent=`Error: ${e.message}`;
   }
 }
 
-// MIDI Export
-function vlq(v) { v = Math.max(0, Math.round(v)); const a = [v & 127]; while (v >>= 7) a.unshift((v & 127) | 128); return a; }
-function u32(n) { return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]; }
-function text(s) { return [...new TextEncoder().encode(s)]; }
-function meta(tick, type, data, order = -10) { return { tick, order, bytes: [255, type, ...vlq(data.length), ...data] }; }
+// ---------- MIDI export ----------
+function vlq(v){v=Math.max(0,Math.round(v));const a=[v&127];while(v>>=7)a.unshift((v&127)|128);return a}
+function u32(n){return[(n>>>24)&255,(n>>>16)&255,(n>>>8)&255,n&255]}
+function text(s){return[...new TextEncoder().encode(s)]}
+function meta(tick,type,data,order=-10){return{tick,order,bytes:[255,type,...vlq(data.length),...data]}}
 
-function chunk(name, program, channel, notes, endTick, tempo = null, markers = []) {
-  const ev = [meta(0, 3, text(name))];
-  if (tempo) {
-    const us = Math.round(60000000 / tempo);
-    ev.push(meta(0, 0x51, [(us >> 16) & 255, (us >> 8) & 255, us & 255]));
-    ev.push(meta(0, 0x58, [4, 2, 24, 8]));
-    for (const m of markers) ev.push(meta(m.tick, 6, text(m.name), -8));
-  }
-  if (program !== null && channel !== 9) ev.push({ tick: 0, order: -5, bytes: [0xC0 | channel, program] });
-  for (const n of notes) { ev.push({ tick: n.tick, order: 1, bytes: [0x90 | channel, n.pitch, n.vel] }); ev.push({ tick: n.tick + n.dur, order: 0, bytes: [0x80 | channel, n.pitch, 0] }); }
-  ev.push(meta(endTick, 0x2f, []));
-  ev.sort((a, b) => a.tick - b.tick || a.order - b.order);
-  let body = [], last = 0;
-  for (const e of ev) { body.push(...vlq(e.tick - last), ...e.bytes); last = e.tick; }
-  return [77, 84, 114, 107, ...u32(body.length), ...body];
+function chunk(name,program,channel,notes,endTick,tempo=null,markers=[]){
+  const ev=[meta(0,3,text(name))];
+  if(tempo){const us=Math.round(60000000/tempo);ev.push(meta(0,0x51,[(us>>16)&255,(us>>8)&255,us&255]));ev.push(meta(0,0x58,[4,2,24,8]));for(const m of markers)ev.push(meta(m.tick,6,text(m.name),-8))}
+  if(program!==null&&channel!==9)ev.push({tick:0,order:-5,bytes:[0xC0|channel,program]});
+  for(const n of notes){ev.push({tick:n.tick,order:1,bytes:[0x90|channel,n.pitch,n.vel]});ev.push({tick:n.tick+n.dur,order:0,bytes:[0x80|channel,n.pitch,0]})}
+  ev.push(meta(endTick,0x2f,[]));
+  ev.sort((a,b)=>a.tick-b.tick||a.order-b.order);
+  let body=[],last=0;
+  for(const e of ev){body.push(...vlq(e.tick-last),...e.bytes);last=e.tick}
+  return[77,84,114,107,...u32(body.length),...body];
 }
 
-function midi(arr, onlyTrack = null) {
-  const tracks = [], markers = [];
-  let tick = 0;
-  for (const s of arr.structure) { markers.push({ tick, name: `${s.name}${s.key !== null && s.key !== undefined ? ` (${s.keyLabel || NOTE_NAMES[s.key]})` : ""}` }); tick += s.bars * BAR; }
-  tracks.push(chunk("Conductor", null, 0, [], arr.totalTicks, arr.tempo, markers));
-  const by = t => arr.events.filter(e => e.track === t);
-  const include = t => onlyTrack ? t === onlyTrack : $(t).checked;
-  if (include("drums")) tracks.push(chunk("Drums", null, 9, by("drums"), arr.totalTicks));
-  if (include("bass")) tracks.push(chunk("Bass", arr.bassProgram, 1, by("bass"), arr.totalTicks));
-  if (include("harmony")) tracks.push(chunk("Harmony", GENRE_STYLES[arr.genre].harmony[$("harmonySound").value], 2, by("harmony"), arr.totalTicks));
-  if (include("lead")) tracks.push(chunk("Lead", arr.leadProgram, 3, by("lead"), arr.totalTicks));
-  if (include("guide")) tracks.push(chunk("Chord Guide", 0, 4, by("guide"), arr.totalTicks));
-  const head = [77, 84, 104, 100, 0, 0, 0, 6, 0, 1, (tracks.length >> 8) & 255, tracks.length & 255, (PPQ >> 8) & 255, PPQ & 255];
-  return new Uint8Array([...head, ...tracks.flat()]);
+function midi(arr, onlyTrack=null){
+  const tracks=[], markers=[];
+  let tick=0;
+  for(const s of arr.structure){markers.push({tick,name:`${s.name}${s.key!==null&&s.key!==undefined?` (${s.keyLabel||NOTE_NAMES[s.key]})`:""}`});tick+=s.bars*BAR}
+  tracks.push(chunk("Conductor",null,0,[],arr.totalTicks,arr.tempo,markers));
+  const by=t=>arr.events.filter(e=>e.track===t);
+  const include=t=>onlyTrack?t===onlyTrack:$(t).checked;
+  if(include("drums"))tracks.push(chunk("Drums",null,9,by("drums"),arr.totalTicks));
+  if(include("bass"))tracks.push(chunk("Bass",arr.bassProgram,1,by("bass"),arr.totalTicks));
+  if(include("harmony"))tracks.push(chunk("Harmony",GENRE_STYLES[arr.genre].harmony[$("harmonySound").value],2,by("harmony"),arr.totalTicks));
+  if(include("lead"))tracks.push(chunk("Lead",arr.leadProgram,3,by("lead"),arr.totalTicks));
+  if(include("guide"))tracks.push(chunk("Chord Guide",0,4,by("guide"),arr.totalTicks));
+  const head=[77,84,104,100,0,0,0,6,0,1,(tracks.length>>8)&255,tracks.length&255,(PPQ>>8)&255,PPQ&255];
+  return new Uint8Array([...head,...tracks.flat()]);
 }
 
+// ---------- generate / export ----------
 function generate() {
   stopPreview();
   try {
-    arrangement = buildArrangement();
+    arrangement=buildArrangement();
     render(arrangement);
-    $("status").className = "status ok";
-    $("status").querySelector("span").textContent = "Generated from one shared timeline.";
-  } catch (e) {
-    $("status").className = "status err";
-    $("status").querySelector("span").textContent = `Error: ${e.message}`;
+    $("status").className="status ok";
+    $("status").querySelector("span").textContent="Generated with intelligent voice leading and genre-specific bass.";
+  } catch(e) {
+    $("status").className="status err";
+    $("status").querySelector("span").textContent=`Error: ${e.message}`;
   }
 }
 
 function download() {
   stopPreview();
   try {
-    arrangement = buildArrangement();
+    arrangement=buildArrangement();
     render(arrangement);
-    const format = document.querySelector('input[name="exportFormat"]:checked').value;
-    let blob, filename, key = `${NOTE_NAMES[arrangement.key.tonic].replace("♯", "sharp").replace("♭", "flat")}-${arrangement.key.mode}`;
-    
-    if (format === "musicxml") {
-      const xml = exportMusicXML(arrangement);
-      blob = new Blob([xml], { type: "application/vnd.recordare.musicxml+xml" });
-      filename = `${arrangement.genre}-${key}-${arrangement.tempo}bpm.xml`;
-    } else if (format === "json") {
-      blob = new Blob([JSON.stringify(arrangement, null, 2)], { type: "application/json" });
-      filename = `${arrangement.genre}-${key}-${arrangement.tempo}bpm.json`;
+    const format=document.querySelector('input[name="exportFormat"]:checked').value;
+    let blob,filename,key=`${NOTE_NAMES[arrangement.key.tonic].replace("♯","sharp").replace("♭","flat")}-${arrangement.key.mode}`;
+    if (format==="musicxml") {
+      const xml=exportMusicXML(arrangement);
+      blob=new Blob([xml],{type:"application/vnd.recordare.musicxml+xml"});
+      filename=`${arrangement.genre}-${key}-${arrangement.tempo}bpm.xml`;
+    } else if (format==="json") {
+      blob=new Blob([JSON.stringify(arrangement,null,2)],{type:"application/json"});
+      filename=`${arrangement.genre}-${key}-${arrangement.tempo}bpm.json`;
     } else {
-      const bytes = midi(arrangement);
-      blob = new Blob([bytes], { type: "audio/midi" });
-      filename = `${arrangement.genre}-${key}-${arrangement.tempo}bpm-seed${arrangement.seed}.mid`;
+      const bytes=midi(arrangement);
+      blob=new Blob([bytes],{type:"audio/midi"});
+      filename=`${arrangement.genre}-${key}-${arrangement.tempo}bpm-seed${arrangement.seed}.mid`;
     }
-    
-    const a = document.createElement("a"), url = URL.createObjectURL(blob);
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    $("status").className = "status ok";
-    $("status").querySelector("span").textContent = `Exported ${format.toUpperCase()}`;
-  } catch (e) {
-    $("status").className = "status err";
-    $("status").querySelector("span").textContent = `Error: ${e.message}`;
+    const a=document.createElement("a"), url=URL.createObjectURL(blob);
+    a.href=url; a.download=filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    $("status").className="status ok";
+    $("status").querySelector("span").textContent=`Exported ${format.toUpperCase()}`;
+  } catch(e) {
+    $("status").className="status err";
+    $("status").querySelector("span").textContent=`Error: ${e.message}`;
   }
 }
 
 function exportStems() {
   stopPreview();
   try {
-    arrangement = buildArrangement();
+    arrangement=buildArrangement();
     render(arrangement);
-    const tracks = ["drums", "bass", "harmony", "lead", "guide"].filter(t => $(t).checked);
-    if (!tracks.length) { $("status").className = "status err"; $("status").querySelector("span").textContent = "Enable at least one track."; return; }
-    const key = `${NOTE_NAMES[arrangement.key.tonic].replace("♯", "sharp").replace("♭", "flat")}-${arrangement.key.mode}`;
-    tracks.forEach((t, i) => {
-      setTimeout(() => {
-        const bytes = midi(arrangement, t);
-        const blob = new Blob([bytes], { type: "audio/midi" });
-        const a = document.createElement("a"), url = URL.createObjectURL(blob);
-        a.href = url;
-        a.download = `${arrangement.genre}-${key}-${t}-seed${arrangement.seed}.mid`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-      }, i * 300);
+    const tracks=["drums","bass","harmony","lead","guide"].filter(t=>$(t).checked);
+    if(!tracks.length){$("status").className="status err";$("status").querySelector("span").textContent="Enable at least one track.";return}
+    const key=`${NOTE_NAMES[arrangement.key.tonic].replace("♯","sharp").replace("♭","flat")}-${arrangement.key.mode}`;
+    tracks.forEach((t,i)=>{
+      setTimeout(()=>{
+        const bytes=midi(arrangement,t);
+        const blob=new Blob([bytes],{type:"audio/midi"});
+        const a=document.createElement("a"), url=URL.createObjectURL(blob);
+        a.href=url; a.download=`${arrangement.genre}-${key}-${t}-seed${arrangement.seed}.mid`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(()=>URL.revokeObjectURL(url),1000);
+      }, i*300);
     });
-    $("status").className = "status ok";
-    $("status").querySelector("span").textContent = `Exporting ${tracks.length} stems...`;
-  } catch (e) {
-    $("status").className = "status err";
-    $("status").querySelector("span").textContent = `Error: ${e.message}`;
+    $("status").className="status ok";
+    $("status").querySelector("span").textContent=`Exporting ${tracks.length} stems...`;
+  } catch(e) {
+    $("status").className="status err";
+    $("status").querySelector("span").textContent=`Error: ${e.message}`;
   }
 }
 
 function exportChart() {
   stopPreview();
   try {
-    arrangement = buildArrangement();
+    arrangement=buildArrangement();
     render(arrangement);
-    const text = $("output").textContent;
-    const blob = new Blob([text], { type: "text/plain" });
-    const a = document.createElement("a"), url = URL.createObjectURL(blob);
-    a.href = url;
-    a.download = `${arrangement.genre}-chord-chart-seed${arrangement.seed}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    $("status").className = "status ok";
-    $("status").querySelector("span").textContent = "Chord chart exported.";
-  } catch (e) {
-    $("status").className = "status err";
-    $("status").querySelector("span").textContent = `Error: ${e.message}`;
+    const text=$("output").textContent;
+    const blob=new Blob([text],{type:"text/plain"});
+    const a=document.createElement("a"), url=URL.createObjectURL(blob);
+    a.href=url; a.download=`${arrangement.genre}-chord-chart-seed${arrangement.seed}.txt`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    $("status").className="status ok";
+    $("status").querySelector("span").textContent="Chord chart exported.";
+  } catch(e) {
+    $("status").className="status err";
+    $("status").querySelector("span").textContent=`Error: ${e.message}`;
   }
 }
 
+// ---------- UI setup ----------
 function populateKeys() {
-  let h = '<option value="auto">Auto detect</option><optgroup label="Major keys">';
-  for (let i = 0; i < 12; i++) h += `<option value="${i}:maj">${NOTE_NAMES[i]} major</option>`;
-  h += '</optgroup><optgroup label="Minor keys">';
-  for (let i = 0; i < 12; i++) h += `<option value="${i}:min">${NOTE_NAMES[i]} minor</option>`;
-  h += '</optgroup>';
-  $("key").innerHTML = h;
+  let h='<option value="auto">Auto detect</option><optgroup label="Major keys">';
+  for(let i=0;i<12;i++) h+=`<option value="${i}:maj">${NOTE_NAMES[i]} major</option>`;
+  h+='</optgroup><optgroup label="Minor keys">';
+  for(let i=0;i<12;i++) h+=`<option value="${i}:min">${NOTE_NAMES[i]} minor</option>`;
+  h+='</optgroup>';
+  $("key").innerHTML=h;
 }
 
-function bindRange(id, suffix = "") {
-  const el = $(id), out = $(id + "Out");
-  const update = () => out.textContent = el.value + suffix;
-  el.addEventListener("input", update);
-  update();
-}
+function bindRange(id,suffix=""){const el=$(id),out=$(id+"Out");const update=()=>out.textContent=el.value+suffix;el.addEventListener("input",update);update()}
 
-// Event listeners
 populateKeys();
 bindRange("complexity");
 bindRange("density");
-bindRange("swing", "%");
-bindRange("humanise", "%");
+bindRange("swing","%");
+bindRange("humanise","%");
 
-$("randomise").onclick = () => { $("seed").value = Math.floor(Math.random() * 1000000); saveState(); generate(); };
-$("themeToggle").onclick = () => {
-  const dark = document.documentElement.getAttribute("data-theme") === "dark";
-  document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
-  $("themeToggle").textContent = dark ? "🌓" : "☀️";
-};
+$("randomise").onclick=()=>{$("seed").value=Math.floor(Math.random()*1000000);saveState();generate()};
+$("themeToggle").onclick=()=>{const dark=document.documentElement.getAttribute("data-theme")==="dark";document.documentElement.setAttribute("data-theme",dark?"light":"dark");$("themeToggle").textContent=dark?"🌓":"☀️"};
+$("undoBtn").onclick=undo;$("redoBtn").onclick=redo;
+$("suggestProgression").onclick=renderAISuggestions;
+$("suggestStructure").onclick=suggestStructure;
+$("suggestStyle").onclick=suggestStyle;
 
-$("undoBtn").onclick = undo;
-$("redoBtn").onclick = redo;
-
-$("suggestProgression").onclick = () => { renderAISuggestions(); };
-$("suggestStructure").onclick = suggestStructure;
-$("suggestStyle").onclick = suggestStyle;
-
-$("addSection").onclick = () => {
-  const el = $("structureEditor"), row = document.createElement("div");
-  row.className = "editRow";
-  row.innerHTML = `<input type="text" class="secName" value="Section"><input type="number" class="secBars" min="1" max="128" value="4"><input type="text" class="secKey" placeholder="Key" style="width:50px;padding:4px;font-size:13px;"><button class="remove" type="button" title="Remove section">✕</button>`;
-  row.querySelector(".remove").onclick = () => row.remove();
+$("addSection").onclick=()=>{
+  const el=$("structureEditor"), row=document.createElement("div");
+  row.className="editRow";
+  row.innerHTML=`<input type="text" class="secName" value="Section"><input type="number" class="secBars" min="1" max="128" value="4"><input type="text" class="secKey" placeholder="Key" style="width:50px;padding:4px;font-size:13px;"><button class="remove" type="button" title="Remove section">✕</button>`;
+  row.querySelector(".remove").onclick=()=>row.remove();
   el.appendChild(row);
 };
 
-$("applyStructure").onclick = () => {
-  const rows = [...$("structureEditor").querySelectorAll(".editRow")];
-  if (!rows.length) { $("status").className = "status err"; $("status").querySelector("span").textContent = "Add at least one section."; return; }
-  const tokens = rows.map(r => {
-    const name = r.querySelector(".secName").value.trim() || "Section";
-    const bars = clamp(+r.querySelector(".secBars").value || 4, 1, 128);
-    const key = r.querySelector(".secKey").value.trim();
-    return key ? `${name}:${bars} in ${key}` : `${name}:${bars}`;
-  });
-  $("structure").value = tokens.join(", ");
+$("applyStructure").onclick=()=>{
+  const rows=[...$("structureEditor").querySelectorAll(".editRow")];
+  if(!rows.length){$("status").className="status err";$("status").querySelector("span").textContent="Add at least one section.";return}
+  const tokens=rows.map(r=>{const name=r.querySelector(".secName").value.trim()||"Section";const bars=clamp(+r.querySelector(".secBars").value||4,1,128);const key=r.querySelector(".secKey").value.trim();return key?`${name}:${bars} in ${key}`:`${name}:${bars}`});
+  $("structure").value=tokens.join(", ");
   saveState();
   generate();
 };
 
-$("applyBarChords").onclick = () => {
-  const rows = [...$("barEditor").querySelectorAll(".editRow[data-bar]")];
-  if (!rows.length) { $("status").className = "status err"; $("status").querySelector("span").textContent = "Nothing to apply."; return; }
-  const names = [];
-  for (const r of rows) {
-    const val = r.querySelector(".barChord").value.trim();
-    let parsed;
-    try { parsed = parseChordToken(val); } catch (err) { $("status").className = "status err"; $("status").querySelector("span").textContent = `Bar ${+r.dataset.bar+1}: ${err.message}`; return; }
-    names.push(parsed.name);
-  }
-  $("chords").value = collapseBarsToChordString(names);
+$("applyBarChords").onclick=()=>{
+  const rows=[...$("barEditor").querySelectorAll(".editRow[data-bar]")];
+  if(!rows.length){$("status").className="status err";$("status").querySelector("span").textContent="Nothing to apply.";return}
+  const names=[];
+  for(const r of rows){const val=r.querySelector(".barChord").value.trim();let parsed;try{parsed=parseChordToken(val)}catch(err){$("status").className="status err";$("status").querySelector("span").textContent=`Bar ${+r.dataset.bar+1}: ${err.message}`;return}names.push(parsed.name)}
+  $("chords").value=collapseBarsToChordString(names);
   saveState();
   generate();
 };
 
-$("generate").onclick = generate;
-$("download").onclick = download;
-$("exportStems").onclick = exportStems;
-$("exportChart").onclick = exportChart;
-$("preview").onclick = () => $("preview").dataset.playing === "1" ? stopPreview() : preview();
+$("generate").onclick=generate;
+$("download").onclick=download;
+$("exportStems").onclick=exportStems;
+$("exportChart").onclick=exportChart;
+$("preview").onclick=()=>$("preview").dataset.playing==="1"?stopPreview():preview();
 
-// Auto-save on input
-["chords", "structure", "key", "genre", "tempo", "seed", "complexity", "density", "swing", "humanise", "harmonySound", "voicingStyle", "ending", "harmonyArticulation", "arpRate", "bassInstrument", "leadInstrument"].forEach(id => {
-  $(id).addEventListener("input", () => { clearTimeout(window._saveTimer); window._saveTimer = setTimeout(saveState, 500); });
+// auto-save
+["chords","structure","key","genre","tempo","seed","complexity","density","swing","humanise","harmonySound","voicingStyle","ending","harmonyArticulation","arpRate","bassInstrument","leadInstrument"].forEach(id=>{
+  $(id).addEventListener("input",()=>{clearTimeout(window._saveTimer);window._saveTimer=setTimeout(saveState,500)});
+});
+document.querySelectorAll('.checks input[type="checkbox"]').forEach(cb=>{
+  cb.addEventListener("change",()=>{clearTimeout(window._saveTimer);window._saveTimer=setTimeout(saveState,500)});
 });
 
-document.querySelectorAll('.checks input[type="checkbox"]').forEach(cb => {
-  cb.addEventListener("change", () => { clearTimeout(window._saveTimer); window._saveTimer = setTimeout(saveState, 500); });
-});
-
-document.addEventListener("keydown", e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
-  if ((e.ctrlKey || e.metaKey) && e.key === "z" && e.shiftKey) { e.preventDefault(); redo(); }
-  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); generate(); }
-  if (e.key === " " && !e.target.matches("input,textarea,select,button")) { e.preventDefault(); $("preview").click(); }
+document.addEventListener("keydown",e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key==="z"&&!e.shiftKey){e.preventDefault();undo()}
+  if((e.ctrlKey||e.metaKey)&&e.key==="z"&&e.shiftKey){e.preventDefault();redo()}
+  if((e.ctrlKey||e.metaKey)&&e.key==="Enter"){e.preventDefault();generate()}
+  if(e.key===" "&&!e.target.matches("input,textarea,select,button")){e.preventDefault();$("preview").click()}
 });
 
 saveState();
