@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Chord Arranger Studio v9.1 — Phase 1 Final</title>
+<title>Chord Arranger Studio v9.2 — Sustained Harmony</title>
 <style>
 :root{--bg:#f5f7fb;--panel:#fff;--ink:#172033;--muted:#667085;--accent:#5147e5;--accent2:#eeedff;--border:#d9dfeb;--ok:#137a4b;--err:#b42318;--dark:#101828}
 [data-theme="dark"]{--bg:#111827;--panel:#1f2937;--ink:#f3f4f6;--muted:#9ca3af;--accent:#818cf8;--accent2:#312e81;--border:#374151;--dark:#f3f4f6}
@@ -43,7 +43,7 @@ textarea{min-height:96px;resize:vertical}.row{display:grid;grid-template-columns
 <header>
 <div class="header-left">
 <span class="badge">AI-Powered Arrangement Engine</span>
-<h1>Chord Arranger Studio <span class="version">v9.1 — Phase 1 Final</span></h1>
+<h1>Chord Arranger Studio <span class="version">v9.2 — Sustained Harmony</span></h1>
 <div class="sub">Intelligent voice leading · Genre-specific bass · Section‑aware dynamics &amp; phrase‑level humanisation</div>
 </div>
 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -102,7 +102,7 @@ textarea{min-height:96px;resize:vertical}.row{display:grid;grid-template-columns
 </div>
 
 <div class="row">
-<div><label for="harmonyArticulation">Harmony articulation</label><select id="harmonyArticulation"><option value="block">Block chord</option><option value="arpUp">Arpeggio up</option><option value="arpDown">Arpeggio down</option><option value="arpUpDown">Arpeggio up-down</option><option value="strumDown">Strum down</option><option value="strumUp">Strum up</option></select></div>
+<div><label for="harmonyArticulation">Harmony articulation</label><select id="harmonyArticulation"><option value="sustain" selected>Sustained chords (no arp/strum)</option><option value="block">Rhythmic block chords</option><option value="arpUp">Arpeggio up</option><option value="arpDown">Arpeggio down</option><option value="arpUpDown">Arpeggio up-down</option><option value="strumDown">Strum down</option><option value="strumUp">Strum up</option></select></div>
 <div><label for="arpRate">Arpeggio rate</label><select id="arpRate"><option value="4">1/4 notes</option><option value="8" selected>1/8 notes</option><option value="16">1/16 notes</option></select></div>
 </div>
 
@@ -1059,6 +1059,32 @@ function generateHarmony(song, events) {
       const doubled = notes.map(n => n+12).filter(n => n < 88);
       finalNotes = [...notes, ...doubled].slice(0,6);
     }
+
+    // True sustained mode: one chord attack, held until the harmony changes
+    // or the current section ends. This bypasses all rhythmic comping,
+    // arpeggiation and strumming.
+    if (song.harmonyArticulation === "sustain") {
+      attacks[b] = [];
+      const isChordStart = b === 0 ||
+        song.bars[b-1].name !== c.name ||
+        song.sections[b-1].sectionIndex !== sec.sectionIndex;
+
+      if (isChordStart) {
+        let span = 1;
+        while (b + span < song.totalBars &&
+               song.bars[b + span].name === c.name &&
+               song.sections[b + span].sectionIndex === sec.sectionIndex) {
+          span++;
+        }
+        const tick = base;
+        const dur = Math.max(48, span * BAR - 24);
+        const vel = velocity(50 + energy * 20, r, song.human, 0);
+        const offset = song.human > 0 ? Math.round((r()-0.5) * song.human * 0.025) : 0;
+        attacks[b].push(tick);
+        articulateChord(events, tick + offset, dur, finalNotes, vel, "sustain", song.arpTicks, `H${b}:sustain`, song.human, r);
+      }
+      continue;
+    }
     
     attacks[b] = [];
     steps.forEach((s,i) => {
@@ -1080,6 +1106,10 @@ function generateHarmony(song, events) {
 }
 
 function articulateChord(events, tick, dur, notes, vel, style, arpTicks, group, humaniseAmount, rng) {
+  if (style === "sustain") {
+    for (const n of notes) add(events, "harmony", tick, dur, n, vel, 2, group);
+    return;
+  }
   if (style === "block" || notes.length < 2) {
     const offset = humaniseAmount > 0 ? Math.round((rng()-0.5)*humaniseAmount*0.03) : 0;
     for (const n of notes) add(events, "harmony", tick+offset, dur, n, vel, 2, group);
@@ -1345,7 +1375,7 @@ function exportMusicXML(arr) {
   <work><work-title>Chord Arranger Studio</work-title></work>
   <identification>
     <creator type="composer">AI Generator</creator>
-    <encoding><software>Chord Arranger Studio v9.1</software><encoding-date>${new Date().toISOString().split('T')[0]}</encoding-date></encoding>
+    <encoding><software>Chord Arranger Studio v9.2</software><encoding-date>${new Date().toISOString().split('T')[0]}</encoding-date></encoding>
   </identification>
   <defaults><scaling><millimeters>7.06</millimeters><tenths>40</tenths></scaling></defaults>
   <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
