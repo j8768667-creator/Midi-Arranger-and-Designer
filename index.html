@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Chord Arranger Studio v9.2 — Sustained Harmony</title>
+<title>Chord Arranger Studio v9.3 — MIDI Chord Import</title>
 <style>
 :root{--bg:#f5f7fb;--panel:#fff;--ink:#172033;--muted:#667085;--accent:#5147e5;--accent2:#eeedff;--border:#d9dfeb;--ok:#137a4b;--err:#b42318;--dark:#101828}
 [data-theme="dark"]{--bg:#111827;--panel:#1f2937;--ink:#f3f4f6;--muted:#9ca3af;--accent:#818cf8;--accent2:#312e81;--border:#374151;--dark:#f3f4f6}
@@ -43,7 +43,7 @@ textarea{min-height:96px;resize:vertical}.row{display:grid;grid-template-columns
 <header>
 <div class="header-left">
 <span class="badge">AI-Powered Arrangement Engine</span>
-<h1>Chord Arranger Studio <span class="version">v9.2 — Sustained Harmony</span></h1>
+<h1>Chord Arranger Studio <span class="version">v9.3 — MIDI Chord Import</span></h1>
 <div class="sub">Intelligent voice leading · Genre-specific bass · Section‑aware dynamics &amp; phrase‑level humanisation</div>
 </div>
 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -59,6 +59,12 @@ textarea{min-height:96px;resize:vertical}.row{display:grid;grid-template-columns
 <label for="chords">Chord progression</label>
 <textarea id="chords">C | G | Am | F</textarea>
 <div class="help">Separate chords with bars, commas or line breaks. Add <code>(N)</code> for duration in bars. Key changes are set per section (e.g. <code>Chorus:8 in G</code>).</div>
+<div class="miniTitle">Import chords from MIDI</div>
+<div class="help">Choose a MIDI file containing sustained or block chords. The importer analyses simultaneous notes, identifies chord names and places the result in the chord progression box.</div>
+<div class="row">
+<div><input id="midiChordFile" type="file" accept=".mid,.midi,audio/midi,audio/x-midi"></div>
+<div><button class="secondary" id="importMidiChords" type="button">Import MIDI chords</button></div>
+</div>
 <div class="row">
 <div><label for="key">Key</label><select id="key"></select></div>
 <div><label for="genre">Genre</label><select id="genre">
@@ -310,6 +316,141 @@ function parseChords(text) {
   const tokens = text.split(/[|,\n]+/).map(x => x.trim()).filter(Boolean);
   if (!tokens.length) throw Error("Enter at least one chord.");
   return tokens.map(parseChordToken);
+}
+
+
+// ---------- MIDI chord import ----------
+function readVLQ(bytes, state) {
+  let value = 0, count = 0;
+  while (state.pos < bytes.length && count < 4) {
+    const b = bytes[state.pos++];
+    value = (value << 7) | (b & 0x7f);
+    count++;
+    if (!(b & 0x80)) return value;
+  }
+  throw Error("Invalid MIDI variable-length value.");
+}
+
+function readU16(bytes, pos) { return (bytes[pos] << 8) | bytes[pos + 1]; }
+function readU32(bytes, pos) { return ((bytes[pos] << 24) >>> 0) + (bytes[pos+1] << 16) + (bytes[pos+2] << 8) + bytes[pos+3]; }
+
+function parseMidiNoteOns(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  if (bytes.length < 14 || String.fromCharCode(...bytes.slice(0,4)) !== "MThd") throw Error("This is not a valid Standard MIDI file.");
+  const headerLen = readU32(bytes, 4);
+  const format = readU16(bytes, 8);
+  const trackCount = readU16(bytes, 10);
+  const division = readU16(bytes, 12);
+  if (division & 0x8000) throw Error("SMPTE-timed MIDI files are not currently supported.");
+  let pos = 8 + headerLen;
+  const noteOns = [];
+  for (let tr = 0; tr < trackCount; tr++) {
+    if (String.fromCharCode(...bytes.slice(pos,pos+4)) !== "MTrk") throw Error("Invalid MIDI track chunk.");
+    const len = readU32(bytes, pos+4), end = pos + 8 + len;
+    const state = { pos: pos + 8 };
+    let tick = 0, running = 0;
+    while (state.pos < end) {
+      tick += readVLQ(bytes, state);
+      let status = bytes[state.pos++];
+      if (status < 0x80) { state.pos--; status = running; }
+      else if (status < 0xf0) running = status;
+      if (status === 0xff) {
+        state.pos++; const l = readVLQ(bytes, state); state.pos += l; continue;
+      }
+      if (status === 0xf0 || status === 0xf7) {
+        const l = readVLQ(bytes, state); state.pos += l; continue;
+      }
+      const type = status & 0xf0, channel = status & 0x0f;
+      const d1 = bytes[state.pos++];
+      const needsTwo = ![0xc0,0xd0].includes(type);
+      const d2 = needsTwo ? bytes[state.pos++] : 0;
+      if (type === 0x90 && d2 > 0 && channel !== 9) noteOns.push({ tick, pitch:d1, velocity:d2, track:tr, channel });
+    }
+    pos = end;
+  }
+  return { format, division, noteOns };
+}
+
+const IMPORT_CHORD_SHAPES = [
+  {q:"maj9", ints:[0,4,7,11,2]}, {q:"m9", ints:[0,3,7,10,2]}, {q:"9", ints:[0,4,7,10,2]},
+  {q:"maj7", ints:[0,4,7,11]}, {q:"m7", ints:[0,3,7,10]}, {q:"7", ints:[0,4,7,10]},
+  {q:"m7b5", ints:[0,3,6,10]}, {q:"dim7", ints:[0,3,6,9]}, {q:"6", ints:[0,4,7,9]}, {q:"m6", ints:[0,3,7,9]},
+  {q:"sus2", ints:[0,2,7]}, {q:"sus4", ints:[0,5,7]}, {q:"dim", ints:[0,3,6]}, {q:"aug", ints:[0,4,8]},
+  {q:"m", ints:[0,3,7]}, {q:"", ints:[0,4,7]}, {q:"5", ints:[0,7]}
+];
+const IMPORT_NOTE_NAMES = ["C","C#","D","Eb","E","F","F#","G","Ab","A","Bb","B"];
+
+function inferChordFromPitches(pitches) {
+  const uniquePitches = [...new Set(pitches)].sort((a,b)=>a-b);
+  const pcs = [...new Set(uniquePitches.map(n=>n%12))];
+  if (pcs.length < 2) return null;
+  const bassPC = uniquePitches[0] % 12;
+  let best = null;
+  for (let root=0; root<12; root++) {
+    for (const shape of IMPORT_CHORD_SHAPES) {
+      const expected = new Set(shape.ints.map(i=>(root+i)%12));
+      let matched=0, extras=0, missing=0;
+      for (const p of pcs) expected.has(p) ? matched++ : extras++;
+      for (const p of expected) if (!pcs.includes(p)) missing++;
+      let score = matched*4 - extras*2.5 - missing*3;
+      if (pcs.includes(root)) score += 2;
+      if (bassPC === root) score += 1;
+      if (!best || score > best.score) best = {root, quality:shape.q, score};
+    }
+  }
+  if (!best || best.score < 3) return null;
+  let name = IMPORT_NOTE_NAMES[best.root] + best.quality;
+  if (bassPC !== best.root && pcs.includes(bassPC)) name += "/" + IMPORT_NOTE_NAMES[bassPC];
+  return name;
+}
+
+function midiToChordString(arrayBuffer) {
+  const { division, noteOns } = parseMidiNoteOns(arrayBuffer);
+  if (!noteOns.length) throw Error("No pitched note-on events were found in this MIDI file.");
+  noteOns.sort((a,b)=>a.tick-b.tick || a.pitch-b.pitch);
+  const tolerance = Math.max(1, Math.round(division/16));
+  const clusters = [];
+  for (const n of noteOns) {
+    const last = clusters[clusters.length-1];
+    if (!last || n.tick-last.tick > tolerance) clusters.push({tick:n.tick,pitches:[n.pitch]});
+    else last.pitches.push(n.pitch);
+  }
+  let detected = clusters.map((c,i)=>({tick:c.tick, name:inferChordFromPitches(c.pitches), nextTick:clusters[i+1]?.tick}))
+    .filter(x=>x.name);
+  if (!detected.length) throw Error("No recognisable chord clusters were found. Try a MIDI file with block or sustained chords.");
+  const compact=[];
+  for (const d of detected) {
+    const last=compact[compact.length-1];
+    if (last && last.name===d.name) last.nextTick=d.nextTick;
+    else compact.push({...d});
+  }
+  const ticksPerBar = division*4;
+  return compact.map((d,i)=>{
+    const next = compact[i+1]?.tick ?? d.nextTick ?? (d.tick+ticksPerBar);
+    const bars = Math.max(1, Math.round((next-d.tick)/ticksPerBar));
+    return bars>1 ? `${d.name}(${bars})` : d.name;
+  }).join(" | ");
+}
+
+async function importMidiChords() {
+  const input = $("midiChordFile");
+  const file = input.files && input.files[0];
+  if (!file) {
+    $("status").className="status err";
+    $("status").querySelector("span").textContent="Choose a MIDI file first.";
+    return;
+  }
+  try {
+    const chordString = midiToChordString(await file.arrayBuffer());
+    $("chords").value = chordString;
+    saveState();
+    generate();
+    $("status").className="status ok";
+    $("status").querySelector("span").textContent=`Imported ${chordString.split("|").length} chord events from ${file.name}.`;
+  } catch (e) {
+    $("status").className="status err";
+    $("status").querySelector("span").textContent=`MIDI import error: ${e.message}`;
+  }
 }
 
 function parseStructureWithKey(text) {
@@ -1741,6 +1882,7 @@ bindRange("density");
 bindRange("swing","%");
 bindRange("humanise","%");
 
+$("importMidiChords").onclick=importMidiChords;
 $("randomise").onclick=()=>{$("seed").value=Math.floor(Math.random()*1000000);saveState();generate()};
 $("themeToggle").onclick=()=>{const dark=document.documentElement.getAttribute("data-theme")==="dark";document.documentElement.setAttribute("data-theme",dark?"light":"dark");$("themeToggle").textContent=dark?"🌓":"☀️"};
 $("undoBtn").onclick=undo;$("redoBtn").onclick=redo;
