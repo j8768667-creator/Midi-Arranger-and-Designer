@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Chord Arranger Studio v9.4 — Musicality Fixes</title>
+<title>Chord Arranger Studio — Ultimate Edition</title>
 <style>
 :root{--bg:#f5f7fb;--panel:#fff;--ink:#172033;--muted:#667085;--accent:#5147e5;--accent2:#eeedff;--border:#d9dfeb;--ok:#137a4b;--err:#b42318;--dark:#101828}
 [data-theme="dark"]{--bg:#111827;--panel:#1f2937;--ink:#f3f4f6;--muted:#9ca3af;--accent:#818cf8;--accent2:#312e81;--border:#374151;--dark:#f3f4f6}
@@ -35,6 +35,12 @@ textarea{min-height:96px;resize:vertical}.row{display:grid;grid-template-columns
 .section-marker{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)}
 .section-marker .key-change{color:var(--accent);font-weight:700}
 .undo-redo-buttons{display:flex;gap:4px}.undo-redo-buttons button{padding:4px 10px;font-size:13px;background:var(--bg);color:var(--ink);border-radius:6px}
+.rollWrap{overflow-x:auto;overflow-y:hidden;border:1px solid var(--border);border-radius:12px;background:var(--dark)}
+.rollWrap canvas{display:block}
+.rollLegend{display:flex;gap:16px;margin:8px 0 0;font-size:12px;color:var(--muted)}
+.rollLegend span{display:flex;align-items:center;gap:5px}
+.rollLegend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+[data-theme="dark"] .rollWrap{background:#020617}
 @media(max-width:860px){.grid{grid-template-columns:1fr}.row.three,.row.four{grid-template-columns:1fr 1fr}}@media(max-width:560px){.wrap{padding:14px}.row,.row.three,.row.four{grid-template-columns:1fr}.seedrow{grid-template-columns:1fr 1fr}.seedrow input{grid-column:1/-1}}
 </style>
 </head>
@@ -42,9 +48,9 @@ textarea{min-height:96px;resize:vertical}.row{display:grid;grid-template-columns
 <div class="wrap">
 <header>
 <div class="header-left">
-<span class="badge">AI-Powered Arrangement Engine</span>
-<h1>Chord Arranger Studio <span class="version">v9.4 — Musicality Fixes</span></h1>
-<div class="sub">Intelligent voice leading · Genre-specific bass · Section‑aware dynamics &amp; phrase‑level humanisation</div>
+<span class="badge">AI-Powered Arrangement Engine · Ultimate Edition</span>
+<h1>Chord Arranger Studio <span class="version">v10 — Ultimate Edition</span></h1>
+<div class="sub">Intelligent voice leading · Genre-specific bass · Section‑aware dynamics &amp; phrase‑level humanisation · piano-roll &amp; drum-groove visualisation</div>
 </div>
 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
 <button class="secondary" id="themeToggle" title="Toggle dark mode">🌓</button>
@@ -143,6 +149,17 @@ textarea{min-height:96px;resize:vertical}.row{display:grid;grid-template-columns
 <div id="timeline" class="timeline"></div>
 <div id="output" class="sequence">Press Generate.</div>
 <div id="stats" class="stats"></div>
+
+<div class="miniTitle">Piano roll <span class="section-marker">harmony · bass · lead</span></div>
+<div class="rollWrap"><canvas id="pianoRoll" height="220"></canvas></div>
+<div class="rollLegend">
+<span><i style="background:#8ea3ff"></i>Harmony</span>
+<span><i style="background:#34d399"></i>Bass</span>
+<span><i style="background:#f59e0b"></i>Lead</span>
+</div>
+
+<div class="miniTitle">Drum groove grid <span class="section-marker">bar <select id="drumGridBar" style="display:inline-block;width:auto;padding:2px 6px;margin:0"></select></span></div>
+<div class="rollWrap"><canvas id="drumGrid" height="120"></canvas></div>
 
 <div class="miniTitle">Edit structure</div>
 <div class="help">Rename sections or change bars. Add <span class="key-change">in KEY</span> for key changes.</div>
@@ -1468,6 +1485,119 @@ function render(arr) {
   });
   renderStructureEditor(arr);
   renderBarEditor(arr);
+  renderPianoRoll(arr);
+  renderDrumGrid(arr);
+}
+
+// ---------- piano roll ----------
+function renderPianoRoll(arr) {
+  const canvas = $("pianoRoll");
+  const pxPerBar = 28;
+  const width = Math.max(600, arr.totalBars * pxPerBar);
+  const height = 220;
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, width, height);
+
+  const melodic = arr.events.filter(e => e.track === "harmony" || e.track === "bass" || e.track === "lead");
+  let minP = 127, maxP = 0;
+  melodic.forEach(e => { if (e.pitch < minP) minP = e.pitch; if (e.pitch > maxP) maxP = e.pitch; });
+  if (!melodic.length) { minP = 48; maxP = 72; }
+  minP = Math.max(0, minP - 2); maxP = Math.min(127, maxP + 2);
+  const rows = Math.max(1, maxP - minP + 1);
+  const rowH = height / rows;
+
+  for (let p = minP; p <= maxP; p++) {
+    const y = height - (p - minP + 1) * rowH;
+    const black = [1,3,6,8,10].includes(p % 12);
+    ctx.fillStyle = black ? "rgba(255,255,255,.02)" : "rgba(255,255,255,.045)";
+    ctx.fillRect(0, y, width, rowH);
+  }
+
+  const totalTicks = arr.totalBars * BAR;
+  for (let b = 0; b <= arr.totalBars; b++) {
+    const x = (b * BAR / totalTicks) * width;
+    ctx.strokeStyle = b % 4 === 0 ? "rgba(198,208,255,.28)" : "rgba(255,255,255,.08)";
+    ctx.lineWidth = b % 4 === 0 ? 1.4 : 1;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
+  }
+
+  const trackColor = { harmony: "#8ea3ff", bass: "#34d399", lead: "#f59e0b" };
+  ["harmony", "bass", "lead"].forEach(track => {
+    ctx.fillStyle = trackColor[track];
+    arr.events.filter(e => e.track === track).forEach(e => {
+      const x = (e.tick / totalTicks) * width;
+      const w = Math.max(2, (e.dur / totalTicks) * width - 1);
+      const y = height - (e.pitch - minP + 1) * rowH;
+      ctx.globalAlpha = track === "harmony" ? .55 : .9;
+      ctx.fillRect(x + .5, y + 1, w, Math.max(2, rowH - 2));
+    });
+  });
+  ctx.globalAlpha = 1;
+}
+
+// ---------- drum groove grid ----------
+function renderDrumGrid(arr) {
+  const select = $("drumGridBar");
+  const prevValue = select.value;
+  select.innerHTML = "";
+  for (let b = 0; b < arr.totalBars; b++) {
+    const opt = document.createElement("option");
+    opt.value = b; opt.textContent = b + 1;
+    select.appendChild(opt);
+  }
+  const bar = prevValue && +prevValue < arr.totalBars ? +prevValue : 0;
+  select.value = bar;
+  select.onchange = () => renderDrumGrid(arr);
+  drawDrumGrid(arr, +select.value);
+}
+
+function drawDrumGrid(arr, bar) {
+  const canvas = $("drumGrid");
+  const rowLabels = [
+    { label: "Crash/Ride", test: p => [49,51,57].includes(p) },
+    { label: "Open hat", test: p => p === 46 },
+    { label: "Closed hat", test: p => p === 42 },
+    { label: "Snare", test: p => p === 38 || p === 37 },
+    { label: "Kick", test: p => p === 36 }
+  ];
+  const steps = 16;
+  const width = Math.max(560, steps * 40 + 90);
+  const rowH = 24, labelW = 90;
+  const height = rowLabels.length * rowH + 10;
+  canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, width, height);
+  ctx.font = "11px -apple-system, sans-serif";
+
+  const barStart = bar * BAR, barEnd = barStart + BAR;
+  const hits = arr.events.filter(e => e.track === "drums" && e.tick >= barStart && e.tick < barEnd);
+  const cellW = (width - labelW) / steps;
+
+  rowLabels.forEach((row, ri) => {
+    const y = ri * rowH + 5;
+    ctx.fillStyle = "#aab2d5";
+    ctx.fillText(row.label, 4, y + rowH * .65);
+    for (let s = 0; s < steps; s++) {
+      const x = labelW + s * cellW;
+      ctx.fillStyle = s % 4 === 0 ? "rgba(255,255,255,.06)" : "rgba(255,255,255,.03)";
+      ctx.fillRect(x + 1, y, cellW - 2, rowH - 4);
+    }
+  });
+
+  hits.forEach(e => {
+    const localTick = e.tick - barStart;
+    const step = Math.round(localTick / STEP);
+    const rowIdx = rowLabels.findIndex(r => r.test(e.pitch));
+    if (rowIdx < 0 || step < 0 || step >= steps) return;
+    const x = labelW + step * cellW;
+    const y = rowIdx * rowH + 5;
+    ctx.fillStyle = "#5147e5";
+    ctx.globalAlpha = Math.max(.35, e.vel / 127);
+    ctx.fillRect(x + 1, y, cellW - 2, rowH - 4);
+    ctx.globalAlpha = 1;
+  });
 }
 
 // ---------- AI suggestions ----------
